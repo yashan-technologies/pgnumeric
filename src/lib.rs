@@ -2,15 +2,20 @@
 
 //! Arbitrary precision numeric, compatible with PostgreSQL's numeric.
 
-pub use crate::error::ParseNumericError;
-use crate::parse::{eat_whitespaces, extract_nan, parse_decimal, Decimal};
-use std::fmt;
-use std::str::FromStr;
-
+mod convert;
 mod error;
 mod parse;
 
-//const NBASE: i32 = 10000;
+pub use crate::error::NumericParseError;
+pub use crate::error::NumericTryFromError;
+
+use crate::convert::{from_floating, from_signed, from_unsigned};
+use crate::parse::{eat_whitespaces, extract_nan, parse_decimal, Decimal};
+use std::convert::TryFrom;
+use std::fmt;
+use std::str::FromStr;
+
+const NBASE: i32 = 10000;
 //const HALF_NBASE: i32 = 5000;
 const DEC_DIGITS: usize = 4;
 //const MUL_GUARD_DIGITS: i32 = 2;
@@ -143,7 +148,7 @@ impl NumericVar {
     /// This function does not handle leading or trailing spaces, and it doesn't
     /// accept `NaN` either. It returns the remaining string bytes so that caller can
     /// check for trailing spaces/garbage if deemed necessary.
-    fn set_var_from_str<'a>(&mut self, s: &'a [u8]) -> Result<&'a [u8], ParseNumericError> {
+    fn set_var_from_str<'a>(&mut self, s: &'a [u8]) -> Result<&'a [u8], NumericParseError> {
         let (
             Decimal {
                 sign,
@@ -210,18 +215,18 @@ impl NumericVar {
     ///
     /// This function handles leading or trailing spaces, and it
     /// accepts `NaN` either.
-    fn from_str(s: &str) -> Result<Self, ParseNumericError> {
+    fn from_str(s: &str) -> Result<Self, NumericParseError> {
         let s = s.as_bytes();
         let s = eat_whitespaces(s);
         if s.is_empty() {
-            return Err(ParseNumericError::empty());
+            return Err(NumericParseError::empty());
         }
 
         let (is_nan, s) = extract_nan(s);
 
         let numeric = if is_nan {
             if s.iter().any(|n| !n.is_ascii_whitespace()) {
-                return Err(ParseNumericError::invalid());
+                return Err(NumericParseError::invalid());
             }
 
             Self::nan()
@@ -230,7 +235,7 @@ impl NumericVar {
             let s = n.set_var_from_str(s)?;
 
             if s.iter().any(|n| !n.is_ascii_whitespace()) {
-                return Err(ParseNumericError::invalid());
+                return Err(NumericParseError::invalid());
             }
 
             n
@@ -241,7 +246,7 @@ impl NumericVar {
 }
 
 impl FromStr for NumericVar {
-    type Err = ParseNumericError;
+    type Err = NumericParseError;
 
     #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -329,50 +334,130 @@ fn read_numeric_digit(s: &[u8]) -> NumericDigit {
     digit
 }
 
+macro_rules! impl_from_signed {
+    ($t: ty) => {
+        impl From<$t> for NumericVar {
+            #[inline]
+            fn from(val: $t) -> Self {
+                from_signed(val)
+            }
+        }
+    };
+}
+
+macro_rules! impl_from_unsigned {
+    ($t: ty) => {
+        impl From<$t> for NumericVar {
+            #[inline]
+            fn from(val: $t) -> Self {
+                from_unsigned(val)
+            }
+        }
+    };
+}
+
+impl_from_signed!(i8);
+impl_from_signed!(i16);
+impl_from_signed!(i32);
+impl_from_signed!(i64);
+impl_from_signed!(i128);
+impl_from_unsigned!(u8);
+impl_from_unsigned!(u16);
+impl_from_unsigned!(u32);
+impl_from_unsigned!(u64);
+impl_from_unsigned!(u128);
+
+impl From<bool> for NumericVar {
+    fn from(b: bool) -> Self {
+        let val = if b { 1u8 } else { 0u8 };
+        val.into()
+    }
+}
+
+impl From<usize> for NumericVar {
+    fn from(u: usize) -> Self {
+        if std::mem::size_of::<usize>() == 8 {
+            (u as u64).into()
+        } else if std::mem::size_of::<usize>() == 4 {
+            (u as u32).into()
+        } else {
+            panic!("invalid usize size")
+        }
+    }
+}
+
+impl From<isize> for NumericVar {
+    fn from(i: isize) -> Self {
+        if std::mem::size_of::<isize>() == 8 {
+            (i as i64).into()
+        } else if std::mem::size_of::<isize>() == 4 {
+            (i as i32).into()
+        } else {
+            panic!("invalid isize size")
+        }
+    }
+}
+
+macro_rules! impl_try_from_floating {
+    ($t: ty) => {
+        impl TryFrom<$t> for NumericVar {
+            type Error = NumericTryFromError;
+
+            fn try_from(f: $t) -> Result<Self, Self::Error> {
+                from_floating(f)
+            }
+        }
+    };
+}
+
+impl_try_from_floating!(f32);
+impl_try_from_floating!(f64);
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::convert::TryInto;
 
-    fn assert_empty<S: AsRef<str>>(s: S) {
+    fn assert_parse_empty<S: AsRef<str>>(s: S) {
         let result = s.as_ref().parse::<NumericVar>();
-        assert_eq!(result.unwrap_err(), ParseNumericError::empty());
+        assert_eq!(result.unwrap_err(), NumericParseError::empty());
     }
 
-    fn assert_invalid<S: AsRef<str>>(s: S) {
+    fn assert_parse_invalid<S: AsRef<str>>(s: S) {
         let result = s.as_ref().parse::<NumericVar>();
-        assert_eq!(result.unwrap_err(), ParseNumericError::invalid());
+        assert_eq!(result.unwrap_err(), NumericParseError::invalid());
     }
 
-    fn assert_overflow<S: AsRef<str>>(s: S) {
+    fn assert_parse_overflow<S: AsRef<str>>(s: S) {
         let result = s.as_ref().parse::<NumericVar>();
-        assert_eq!(result.unwrap_err(), ParseNumericError::overflow());
+        assert_eq!(result.unwrap_err(), NumericParseError::overflow());
     }
 
     #[test]
     fn parse_error() {
-        assert_empty("");
-        assert_empty("   ");
-        assert_invalid("-");
-        assert_invalid("   -   ");
-        assert_invalid("-.");
-        assert_invalid("- 1");
-        assert_invalid("-NaN");
-        assert_invalid("NaN.");
-        assert_invalid("NaN1");
-        assert_invalid("   NaN   .   ");
-        assert_invalid("   NaN   1   ");
-        assert_invalid(".");
-        assert_invalid("   .   ");
-        assert_invalid("e");
-        assert_invalid("   e   ");
-        assert_invalid("-e");
-        assert_invalid("-1e");
-        assert_invalid("1e1.1");
-        assert_invalid("-1 e1");
-        assert_invalid("   x   ");
-        assert_overflow("1e10000000000");
-        assert_overflow("1e2147483648");
-        assert_overflow("1e-2147483648");
+        assert_parse_empty("");
+        assert_parse_empty("   ");
+        assert_parse_invalid("-");
+        assert_parse_invalid("   -   ");
+        assert_parse_invalid("-.");
+        assert_parse_invalid("- 1");
+        assert_parse_invalid("-NaN");
+        assert_parse_invalid("NaN.");
+        assert_parse_invalid("NaN1");
+        assert_parse_invalid("   NaN   .   ");
+        assert_parse_invalid("   NaN   1   ");
+        assert_parse_invalid(".");
+        assert_parse_invalid("   .   ");
+        assert_parse_invalid("e");
+        assert_parse_invalid("   e   ");
+        assert_parse_invalid("-e");
+        assert_parse_invalid("-1e");
+        assert_parse_invalid("1e1.1");
+        assert_parse_invalid("-1 e1");
+        assert_parse_invalid("   x   ");
+        assert_parse_overflow("1e10000000000");
+        assert_parse_overflow("1e2147483648");
+        assert_parse_overflow("1e-2147483648");
     }
 
     fn assert_parse<S: AsRef<str>, V: AsRef<str>>(s: S, expected: V) {
@@ -457,5 +542,197 @@ mod tests {
         assert_parse("-1e-10", "-0.0000000001");
         assert_parse("0000001.23456000e3", "1234.56000");
         assert_parse("-0000001.23456000E-3", "-0.00123456000");
+    }
+
+    fn assert_from<V: Into<NumericVar>, E: AsRef<str>>(val: V, expected: E) {
+        let numeric = val.into();
+        assert_eq!(numeric.to_string(), expected.as_ref());
+    }
+
+    #[test]
+    fn from_i8() {
+        assert_from(0i8, "0");
+        assert_from(1i8, "1");
+        assert_from(-1i8, "-1");
+        assert_from(127i8, "127");
+        assert_from(-128i8, "-128");
+    }
+
+    #[test]
+    fn from_i16() {
+        assert_from(0i16, "0");
+        assert_from(1i16, "1");
+        assert_from(-1i16, "-1");
+        assert_from(32767i16, "32767");
+        assert_from(-32768i16, "-32768");
+    }
+
+    #[test]
+    fn from_i32() {
+        assert_from(0i32, "0");
+        assert_from(1i32, "1");
+        assert_from(-1i32, "-1");
+        assert_from(2147483647i32, "2147483647");
+        assert_from(-2147483647i32, "-2147483647");
+    }
+
+    #[test]
+    fn from_i64() {
+        assert_from(0i64, "0");
+        assert_from(1i64, "1");
+        assert_from(-1i64, "-1");
+        assert_from(9223372036854775807i64, "9223372036854775807");
+        assert_from(-9223372036854775808i64, "-9223372036854775808");
+    }
+
+    #[test]
+    fn from_i128() {
+        assert_from(0i128, "0");
+        assert_from(1i128, "1");
+        assert_from(-1i128, "-1");
+        assert_from(
+            170141183460469231731687303715884105727i128,
+            "170141183460469231731687303715884105727",
+        );
+        assert_from(
+            -170141183460469231731687303715884105728i128,
+            "-170141183460469231731687303715884105728",
+        );
+    }
+
+    #[test]
+    fn from_u8() {
+        assert_from(0u8, "0");
+        assert_from(1u8, "1");
+        assert_from(255u8, "255");
+    }
+
+    #[test]
+    fn from_u16() {
+        assert_from(0u16, "0");
+        assert_from(1u16, "1");
+        assert_from(65535u16, "65535");
+    }
+
+    #[test]
+    fn from_u32() {
+        assert_from(0u32, "0");
+        assert_from(1u32, "1");
+        assert_from(4294967295u32, "4294967295");
+    }
+
+    #[test]
+    fn from_u64() {
+        assert_from(0u64, "0");
+        assert_from(1u64, "1");
+        assert_from(18446744073709551615u64, "18446744073709551615");
+    }
+
+    #[test]
+    fn from_u128() {
+        assert_from(0u128, "0");
+        assert_from(1u128, "1");
+        assert_from(
+            340282366920938463463374607431768211455u128,
+            "340282366920938463463374607431768211455",
+        );
+    }
+
+    #[test]
+    fn from_bool() {
+        assert_from(true, "1");
+        assert_from(false, "0");
+    }
+
+    #[test]
+    fn from_usize() {
+        assert_from(0usize, "0");
+        assert_from(1usize, "1");
+        if std::mem::size_of::<usize>() == 8 {
+            assert_from(18446744073709551615usize, "18446744073709551615");
+        } else if std::mem::size_of::<usize>() == 4 {
+            assert_from(4294967295usize, "4294967295u32");
+        }
+    }
+
+    #[test]
+    fn from_isize() {
+        assert_from(0isize, "0");
+        assert_from(1isize, "1");
+        if std::mem::size_of::<isize>() == 8 {
+            assert_from(9223372036854775807isize, "9223372036854775807");
+            assert_from(-9223372036854775808isize, "-9223372036854775808");
+        } else if std::mem::size_of::<isize>() == 4 {
+            assert_from(2147483647isize, "2147483647");
+            assert_from(-2147483648isize, "-2147483648");
+        }
+    }
+
+    fn assert_try_from<V: TryInto<NumericVar, Error = NumericTryFromError>, E: AsRef<str>>(
+        val: V,
+        expected: E,
+    ) {
+        let numeric = val.try_into().unwrap();
+        assert_eq!(numeric.to_string(), expected.as_ref());
+    }
+
+    fn assert_try_from_invalid<V: TryInto<NumericVar, Error = NumericTryFromError>>(val: V) {
+        let result = val.try_into();
+        assert_eq!(result.unwrap_err(), NumericTryFromError::invalid());
+    }
+
+    #[test]
+    fn try_from_f32() {
+        assert_try_from_invalid(std::f32::INFINITY);
+        assert_try_from_invalid(std::f32::NEG_INFINITY);
+        assert_try_from(std::f32::NAN, "NaN");
+        assert_try_from(0.0f32, "0");
+        assert_try_from(-0.0f32, "0");
+        assert_try_from(0.000001f32, "0.000001");
+        assert_try_from(0.0000001f32, "0.0000001");
+        assert_try_from(0.555555f32, "0.555555");
+        assert_try_from(0.5555555f32, "0.555556");
+        assert_try_from(0.999999f32, "0.999999");
+        assert_try_from(0.9999999f32, "1");
+        assert_try_from(1.0f32, "1");
+        assert_try_from(1.00001f32, "1.00001");
+        assert_try_from(1.000001f32, "1");
+        assert_try_from(1.555555f32, "1.55555");
+        assert_try_from(1.5555555f32, "1.55556");
+        assert_try_from(1.99999f32, "1.99999");
+        assert_try_from(1.999999f32, "2");
+        assert_try_from(1e-6f32, "0.000001");
+        assert_try_from(1e-10f32, "0.0000000001");
+        assert_try_from(1.23456789e10f32, "12345700000");
+        assert_try_from(1.23456789e-10f32, "0.000000000123457");
+    }
+
+    #[test]
+    fn try_from_f64() {
+        assert_try_from_invalid(std::f64::INFINITY);
+        assert_try_from_invalid(std::f64::NEG_INFINITY);
+        assert_try_from(std::f64::NAN, "NaN");
+        assert_try_from(0.0f64, "0");
+        assert_try_from(-0.0f64, "0");
+        assert_try_from(0.000000000000001f64, "0.000000000000001");
+        assert_try_from(0.0000000000000001f64, "0.0000000000000001");
+        assert_try_from(0.555555555555555f64, "0.555555555555555");
+        assert_try_from(0.5555555555555556f64, "0.555555555555556");
+        assert_try_from(0.999999999999999f64, "0.999999999999999");
+        assert_try_from(0.9999999999999999f64, "1");
+        assert_try_from(1.0f64, "1");
+        assert_try_from(1.00000000000001f64, "1.00000000000001");
+        assert_try_from(1.000000000000001f64, "1");
+        assert_try_from(1.55555555555555f64, "1.55555555555555");
+        assert_try_from(1.555555555555556f64, "1.55555555555556");
+        assert_try_from(1.99999999999999f64, "1.99999999999999");
+        assert_try_from(1.999999999999999f64, "2");
+        assert_try_from(1e-6f64, "0.000001");
+        assert_try_from(1e-20f64, "0.00000000000000000001");
+        assert_try_from(1.234567890123456789e20f64, "123456789012346000000");
+        assert_try_from(
+            1.234567890123456789e-20f64,
+            "0.0000000000000000000123456789012346",
+        );
     }
 }

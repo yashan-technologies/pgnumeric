@@ -2,7 +2,7 @@
 
 //! Numeric parsing utilities
 
-use crate::{ParseNumericError, NUMERIC_NEG, NUMERIC_POS};
+use crate::{NumericParseError, NUMERIC_NEG, NUMERIC_POS};
 
 #[derive(Debug)]
 pub enum Sign {
@@ -21,11 +21,11 @@ pub struct Decimal<'a> {
 
 /// Checks if the input string is a valid numeric and if so, locate the integral
 /// part, the fractional part, and the exponent in it.
-pub fn parse_decimal(s: &[u8]) -> Result<(Decimal, &[u8]), ParseNumericError> {
+pub fn parse_decimal(s: &[u8]) -> Result<(Decimal, &[u8]), NumericParseError> {
     let (sign, s) = extract_sign(s);
 
     if s.is_empty() {
-        return Err(ParseNumericError::invalid());
+        return Err(NumericParseError::invalid());
     }
 
     let (integral, s) = eat_digits(s);
@@ -33,7 +33,7 @@ pub fn parse_decimal(s: &[u8]) -> Result<(Decimal, &[u8]), ParseNumericError> {
     let (fractional, exp, s) = match s.first() {
         Some(&b'e') | Some(&b'E') => {
             if integral.is_empty() {
-                return Err(ParseNumericError::invalid());
+                return Err(NumericParseError::invalid());
             }
 
             let (exp, s) = extract_exponent(&s[1..])?;
@@ -42,7 +42,7 @@ pub fn parse_decimal(s: &[u8]) -> Result<(Decimal, &[u8]), ParseNumericError> {
         Some(&b'.') => {
             let (fractional, s) = eat_digits(&s[1..]);
             if integral.is_empty() && fractional.is_empty() {
-                return Err(ParseNumericError::invalid());
+                return Err(NumericParseError::invalid());
             }
 
             match s.first() {
@@ -55,7 +55,7 @@ pub fn parse_decimal(s: &[u8]) -> Result<(Decimal, &[u8]), ParseNumericError> {
         }
         _ => {
             if integral.is_empty() {
-                return Err(ParseNumericError::invalid());
+                return Err(NumericParseError::invalid());
             }
 
             (b"".as_ref(), 0, s)
@@ -114,12 +114,12 @@ pub fn extract_sign(s: &[u8]) -> (Sign, &[u8]) {
 }
 
 /// Extracts exponent, if any.
-pub fn extract_exponent(s: &[u8]) -> Result<(i32, &[u8]), ParseNumericError> {
+pub fn extract_exponent(s: &[u8]) -> Result<(i32, &[u8]), NumericParseError> {
     let (sign, s) = extract_sign(s);
     let (mut number, s) = eat_digits(s);
 
     if number.is_empty() {
-        return Err(ParseNumericError::invalid());
+        return Err(NumericParseError::invalid());
     }
 
     while number.first() == Some(&b'0') {
@@ -127,7 +127,7 @@ pub fn extract_exponent(s: &[u8]) -> Result<(i32, &[u8]), ParseNumericError> {
     }
 
     if number.len() > 10 {
-        return Err(ParseNumericError::overflow());
+        return Err(NumericParseError::overflow());
     }
 
     let exp = {
@@ -146,7 +146,7 @@ pub fn extract_exponent(s: &[u8]) -> Result<(i32, &[u8]), ParseNumericError> {
     // constraining the exponent similarly should be enough to prevent
     // integer overflow in this function.
     if exp >= i32::max_value() as i64 / 2 || exp <= -(i32::max_value() as i64 / 2) {
-        return Err(ParseNumericError::overflow());
+        return Err(NumericParseError::overflow());
     }
 
     Ok((exp as i32, s))
