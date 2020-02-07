@@ -16,7 +16,7 @@ use std::fmt;
 use std::str::FromStr;
 
 const NBASE: i32 = 10000;
-//const HALF_NBASE: i32 = 5000;
+const HALF_NBASE: NumericDigit = 5000;
 const DEC_DIGITS: usize = 4;
 //const MUL_GUARD_DIGITS: i32 = 2;
 //const DIV_GUARD_DIGITS: i32 = 4;
@@ -28,6 +28,8 @@ const NUMERIC_NEG: i32 = 0x4000;
 const NUMERIC_NAN: i32 = 0xC000;
 
 type NumericDigit = i16;
+
+static ROUND_POWERS: [NumericDigit; 4] = [0, 1000, 100, 10];
 
 /// `NumericVar` is the format we use for arithmetic.
 /// The value represented by a NumericVar is determined by the `sign`, `weight`,
@@ -60,7 +62,7 @@ type NumericDigit = i16;
 /// make use of the base-10 weight (ie, the approximate log10 of the value).
 /// To avoid confusion, such a decimal-units weight is called a "dweight".
 ///
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NumericVar {
     ndigits: i32,
     weight: i32,
@@ -112,6 +114,129 @@ impl NumericVar {
         self.buf[0] = 0;
         self.offset = 1;
         self.ndigits = ndigits;
+    }
+
+    /// Round the value of a variable to no more than rscale decimal digits
+    /// after the decimal point.
+    ///
+    /// NOTE: we allow rscale < 0 here, implying rounding before the decimal point.
+    #[allow(dead_code)]
+    fn round(&mut self, rscale: i32) {
+        // Carry may need one additional digit
+        debug_assert!(self.offset > 0);
+
+        // decimal digits wanted
+        let di = (self.weight + 1) * DEC_DIGITS as i32 + rscale;
+
+        // If di = 0, the value loses all digits, but could round up to 1 if its
+        // first extra digit is >= 5.  If di < 0 the result must be 0.
+        if di < 0 {
+            self.ndigits = 0;
+            self.weight = 0;
+            self.sign = NUMERIC_POS;
+        } else {
+            // NBASE digits wanted
+            let mut ndigits = (di + DEC_DIGITS as i32 - 1) / DEC_DIGITS as i32;
+            // 0, or number of decimal digits to keep in last NBASE digit
+            let di = di % DEC_DIGITS as i32;
+
+            if ndigits < self.ndigits || (ndigits == self.ndigits && di > 0) {
+                self.ndigits = ndigits;
+
+                let digits = &mut self.buf.as_mut_slice()[self.offset..];
+                let mut carray: i32 = 0;
+
+                if di == 0 {
+                    if digits[ndigits as usize] >= HALF_NBASE {
+                        carray = 1;
+                    }
+                } else {
+                    // Must round within last NBASE digit
+                    let mut pow10 = ROUND_POWERS[di as usize];
+                    ndigits -= 1;
+                    let extra = digits[ndigits as usize] % pow10;
+                    digits[ndigits as usize] -= extra;
+
+                    if extra >= pow10 / 2 {
+                        pow10 += digits[ndigits as usize];
+                        if pow10 >= NBASE as NumericDigit {
+                            pow10 -= NBASE as NumericDigit;
+                            carray = 1;
+                        }
+                        digits[ndigits as usize] = pow10;
+                    }
+                }
+
+                // Carry may need one additional digit, so we use buf from start.
+                let digits = &mut self.buf.as_mut_slice();
+                let offset = self.offset;
+
+                // Propagate carry if needed
+                while carray > 0 {
+                    ndigits -= 1;
+                    let i = (offset as i32 + ndigits) as usize;
+                    carray += digits[i] as i32;
+
+                    if carray >= NBASE as i32 {
+                        digits[i] = (carray - NBASE as i32) as NumericDigit;
+                        carray = 1;
+                    } else {
+                        digits[i] = carray as NumericDigit;
+                        carray = 0;
+                    }
+                }
+
+                if ndigits < 0 {
+                    debug_assert_eq!(ndigits, -1);
+                    debug_assert!(self.offset > 0);
+                    self.offset -= 1;
+                    self.ndigits += 1;
+                    self.weight += 1;
+                }
+            }
+        }
+
+        self.dscale = rscale;
+        self.buf.truncate(self.offset + self.ndigits as usize);
+    }
+
+    /// Truncate (towards zero) the value of a variable at rscale decimal digits
+    /// after the decimal point.
+    ///
+    /// NOTE: we allow rscale < 0 here, implying truncation before the decimal point.
+    #[allow(dead_code)]
+    fn trunc(&mut self, rscale: i32) {
+        // decimal digits wanted
+        let di = (self.weight + 1) * DEC_DIGITS as i32 + rscale;
+
+        // If di <= 0, the value loses all digits.
+        if di <= 0 {
+            self.ndigits = 0;
+            self.weight = 0;
+            self.sign = NUMERIC_POS;
+        } else {
+            // NBASE digits wanted
+            let mut ndigits = (di + DEC_DIGITS as i32 - 1) / DEC_DIGITS as i32;
+
+            if ndigits <= self.ndigits {
+                self.ndigits = ndigits;
+
+                // 0, or number of decimal digits to keep in last NBASE digit
+                let di = di % DEC_DIGITS as i32;
+
+                if di > 0 {
+                    let digits = &mut self.buf.as_mut_slice()[self.offset..];
+                    let pow10 = ROUND_POWERS[di as usize];
+                    ndigits -= 1;
+
+                    let extra = digits[ndigits as usize] % pow10;
+                    digits[ndigits as usize] -= extra;
+                }
+            }
+        }
+
+        self.dscale = rscale;
+        self.buf.truncate(self.offset + self.ndigits as usize);
     }
 
     /// Strips the leading and trailing zeroes, and normalize zero.
@@ -734,5 +859,63 @@ mod tests {
             1.234567890123456789e-20f64,
             "0.0000000000000000000123456789012346",
         );
+    }
+
+    fn assert_round_floating<V: TryInto<NumericVar, Error = NumericTryFromError>, E: AsRef<str>>(
+        val: V,
+        rscale: i32,
+        expected: E,
+    ) {
+        let mut numeric = val.try_into().unwrap();
+        numeric.round(rscale);
+        assert_eq!(numeric.to_string(), expected.as_ref());
+    }
+
+    #[test]
+    fn round() {
+        assert_round_floating(123456.123456f64, 6, "123456.123456");
+        assert_round_floating(123456.123456f64, 5, "123456.12346");
+        assert_round_floating(123456.123456f64, 4, "123456.1235");
+        assert_round_floating(123456.123456f64, 3, "123456.123");
+        assert_round_floating(123456.123456f64, 2, "123456.12");
+        assert_round_floating(123456.123456f64, 1, "123456.1");
+        assert_round_floating(123456.123456f64, 0, "123456");
+        assert_round_floating(123456.123456f64, -1, "123460");
+        assert_round_floating(123456.123456f64, -2, "123500");
+        assert_round_floating(123456.123456f64, -3, "123000");
+        assert_round_floating(123456.123456f64, -4, "120000");
+        assert_round_floating(123456.123456f64, -5, "100000");
+        assert_round_floating(9999.9f64, 1, "9999.9");
+        assert_round_floating(9999.9f64, -2, "10000");
+        assert_round_floating(9999.9f64, -4, "10000");
+    }
+
+    fn assert_trunc_floating<V: TryInto<NumericVar, Error = NumericTryFromError>, E: AsRef<str>>(
+        val: V,
+        rscale: i32,
+        expected: E,
+    ) {
+        let mut numeric = val.try_into().unwrap();
+        numeric.trunc(rscale);
+        assert_eq!(numeric.to_string(), expected.as_ref());
+    }
+
+    #[test]
+    fn trunc() {
+        assert_trunc_floating(123456.123456f64, 6, "123456.123456");
+        assert_trunc_floating(123456.123456f64, 5, "123456.12345");
+        assert_trunc_floating(123456.123456f64, 4, "123456.1234");
+        assert_trunc_floating(123456.123456f64, 3, "123456.123");
+        assert_trunc_floating(123456.123456f64, 2, "123456.12");
+        assert_trunc_floating(123456.123456f64, 1, "123456.1");
+        assert_trunc_floating(123456.123456f64, 0, "123456");
+        assert_trunc_floating(123456.123456f64, -1, "123450");
+        assert_trunc_floating(123456.123456f64, -2, "123400");
+        assert_trunc_floating(123456.123456f64, -3, "123000");
+        assert_trunc_floating(123456.123456f64, -4, "120000");
+        assert_trunc_floating(123456.123456f64, -5, "100000");
+        assert_trunc_floating(9999.9f64, 1, "9999.9");
+        assert_trunc_floating(9999.9f64, -2, "9900");
+        assert_trunc_floating(9999.9f64, -4, "0");
     }
 }
