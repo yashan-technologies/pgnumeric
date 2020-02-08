@@ -3,6 +3,7 @@
 //! Numeric parsing utilities
 
 use crate::{NumericParseError, NUMERIC_NEG, NUMERIC_POS};
+use std::convert::TryInto;
 
 #[derive(Debug)]
 pub enum Sign {
@@ -96,7 +97,9 @@ pub fn extract_nan(s: &[u8]) -> (bool, &[u8]) {
     if s.len() < 3 {
         (false, s)
     } else {
-        if &s[0..3] == b"NaN" {
+        let mut buf: [u8; 3] = s[0..3].try_into().unwrap();
+        buf.make_ascii_lowercase();
+        if &buf == b"nan" {
             (true, &s[3..])
         } else {
             (false, s)

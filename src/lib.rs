@@ -594,6 +594,13 @@ mod tests {
     fn parse_valid() {
         // NaN
         assert_parse("NaN", "NaN");
+        assert_parse("Nan", "NaN");
+        assert_parse("NAN", "NaN");
+        assert_parse("NAn", "NaN");
+        assert_parse("naN", "NaN");
+        assert_parse("nan", "NaN");
+        assert_parse("nAN", "NaN");
+        assert_parse("nAn", "NaN");
         assert_parse("   NaN   ", "NaN");
 
         // Integer
