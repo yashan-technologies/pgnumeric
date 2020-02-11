@@ -89,14 +89,14 @@ impl NumericVar {
     #[inline]
     fn digits(&self) -> &[NumericDigit] {
         debug_assert_eq!(self.buf.len(), self.offset + self.ndigits as usize);
-        &self.buf.as_slice()[self.offset..]
+        &self.buf.as_slice()[self.offset..self.offset + self.ndigits as usize]
     }
 
     /// Returns mutable digits buffer.
     #[inline]
     fn digits_mut(&mut self) -> &mut [NumericDigit] {
         debug_assert_eq!(self.buf.len(), self.offset + self.ndigits as usize);
-        &mut self.buf.as_mut_slice()[self.offset..]
+        &mut self.buf.as_mut_slice()[self.offset..self.offset + self.ndigits as usize]
     }
 
     /// Checks if the value is `NaN`.
@@ -120,10 +120,9 @@ impl NumericVar {
     /// after the decimal point.
     ///
     /// NOTE: we allow rscale < 0 here, implying rounding before the decimal point.
-    #[allow(dead_code)]
     fn round(&mut self, rscale: i32) {
         // Carry may need one additional digit
-        debug_assert!(self.offset > 0);
+        debug_assert!(self.offset > 0 || self.ndigits == 0);
 
         // decimal digits wanted
         let di = (self.weight + 1) * DEC_DIGITS as i32 + rscale;
@@ -268,12 +267,47 @@ impl NumericVar {
         self.buf.truncate(self.offset + ndigits as usize);
     }
 
+    /// Reserve 1 digit for rounding.
+    fn reserve_digit(&mut self) {
+        if self.ndigits > 0 && self.offset == 0 {
+            let mut buf = Vec::with_capacity(self.ndigits as usize + 1);
+            buf.push(0); // spare digit for rounding
+            buf.extend_from_slice(self.digits());
+
+            self.buf = buf;
+            self.offset = 1;
+        }
+    }
+
+    /// Set this numeric from other numeric.
+    ///
+    /// Note: If there are digits, we will reserve one more digit for rounding.
+    #[allow(dead_code)]
+    fn set_from_var(&mut self, value: &NumericVar) {
+        self.ndigits = value.ndigits;
+        self.weight = value.weight;
+        self.sign = value.sign;
+        self.dscale = value.dscale;
+
+        if value.ndigits > 0 {
+            let mut buf = Vec::with_capacity(value.ndigits as usize + 1);
+            buf.push(0); // spare digit for rounding
+            buf.extend_from_slice(value.digits());
+
+            self.buf = buf;
+            self.offset = 1;
+        } else {
+            self.buf = Vec::new();
+            self.offset = 0;
+        }
+    }
+
     /// Parses a string bytes and put the number into this variable.
     ///
     /// This function does not handle leading or trailing spaces, and it doesn't
     /// accept `NaN` either. It returns the remaining string bytes so that caller can
     /// check for trailing spaces/garbage if deemed necessary.
-    fn set_var_from_str<'a>(&mut self, s: &'a [u8]) -> Result<&'a [u8], NumericParseError> {
+    fn set_from_str<'a>(&mut self, s: &'a [u8]) -> Result<&'a [u8], NumericParseError> {
         let (
             Decimal {
                 sign,
@@ -357,7 +391,7 @@ impl NumericVar {
             Self::nan()
         } else {
             let mut n = NumericVar::nan();
-            let s = n.set_var_from_str(s)?;
+            let s = n.set_from_str(s)?;
 
             if s.iter().any(|n| !n.is_ascii_whitespace()) {
                 return Err(NumericParseError::invalid());

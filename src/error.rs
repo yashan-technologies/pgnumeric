@@ -2,6 +2,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::num::ParseFloatError;
 
 /// An error which can be returned when parsing a numeric.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,5 +97,11 @@ impl From<NumericParseError> for NumericTryFromError {
             ParseErrorKind::Empty | ParseErrorKind::Invalid => NumericTryFromError::invalid(),
             ParseErrorKind::Overflow => NumericTryFromError::overflow(),
         }
+    }
+}
+
+impl From<ParseFloatError> for NumericTryFromError {
+    fn from(_: ParseFloatError) -> Self {
+        NumericTryFromError::invalid()
     }
 }
