@@ -10,10 +10,9 @@ pub use crate::error::NumericParseError;
 pub use crate::error::NumericTryFromError;
 
 use crate::convert::{from_floating, from_signed, from_unsigned};
-use crate::parse::{eat_whitespaces, extract_nan, parse_decimal, Decimal};
+use crate::parse::{parse_decimal, Decimal};
 use std::convert::TryFrom;
 use std::fmt;
-use std::str::FromStr;
 
 const NBASE: i32 = 10000;
 const HALF_NBASE: NumericDigit = 5000;
@@ -369,48 +368,6 @@ impl NumericVar {
 
         Ok(s)
     }
-
-    /// Parses a string slice and creates a number.
-    ///
-    /// This function handles leading or trailing spaces, and it
-    /// accepts `NaN` either.
-    fn from_str(s: &str) -> Result<Self, NumericParseError> {
-        let s = s.as_bytes();
-        let s = eat_whitespaces(s);
-        if s.is_empty() {
-            return Err(NumericParseError::empty());
-        }
-
-        let (is_nan, s) = extract_nan(s);
-
-        let numeric = if is_nan {
-            if s.iter().any(|n| !n.is_ascii_whitespace()) {
-                return Err(NumericParseError::invalid());
-            }
-
-            Self::nan()
-        } else {
-            let mut n = NumericVar::nan();
-            let s = n.set_from_str(s)?;
-
-            if s.iter().any(|n| !n.is_ascii_whitespace()) {
-                return Err(NumericParseError::invalid());
-            }
-
-            n
-        };
-
-        Ok(numeric)
-    }
-}
-
-impl FromStr for NumericVar {
-    type Err = NumericParseError;
-
-    #[inline]
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        NumericVar::from_str(s)
-    }
 }
 
 impl fmt::Display for NumericVar {
@@ -576,139 +533,6 @@ impl_try_from_floating!(f64);
 mod tests {
     use super::*;
     use std::convert::TryInto;
-
-    fn assert_parse_empty<S: AsRef<str>>(s: S) {
-        let result = s.as_ref().parse::<NumericVar>();
-        assert_eq!(result.unwrap_err(), NumericParseError::empty());
-    }
-
-    fn assert_parse_invalid<S: AsRef<str>>(s: S) {
-        let result = s.as_ref().parse::<NumericVar>();
-        assert_eq!(result.unwrap_err(), NumericParseError::invalid());
-    }
-
-    fn assert_parse_overflow<S: AsRef<str>>(s: S) {
-        let result = s.as_ref().parse::<NumericVar>();
-        assert_eq!(result.unwrap_err(), NumericParseError::overflow());
-    }
-
-    #[test]
-    fn parse_error() {
-        assert_parse_empty("");
-        assert_parse_empty("   ");
-        assert_parse_invalid("-");
-        assert_parse_invalid("   -   ");
-        assert_parse_invalid("-.");
-        assert_parse_invalid("- 1");
-        assert_parse_invalid("-NaN");
-        assert_parse_invalid("NaN.");
-        assert_parse_invalid("NaN1");
-        assert_parse_invalid("   NaN   .   ");
-        assert_parse_invalid("   NaN   1   ");
-        assert_parse_invalid(".");
-        assert_parse_invalid("   .   ");
-        assert_parse_invalid("e");
-        assert_parse_invalid("   e   ");
-        assert_parse_invalid("-e");
-        assert_parse_invalid("-1e");
-        assert_parse_invalid("1e1.1");
-        assert_parse_invalid("-1 e1");
-        assert_parse_invalid("   x   ");
-        assert_parse_overflow("1e10000000000");
-        assert_parse_overflow("1e2147483648");
-        assert_parse_overflow("1e-2147483648");
-    }
-
-    fn assert_parse<S: AsRef<str>, V: AsRef<str>>(s: S, expected: V) {
-        let numeric = s.as_ref().parse::<NumericVar>().unwrap();
-        assert_eq!(numeric.to_string(), expected.as_ref());
-    }
-
-    #[test]
-    fn parse_valid() {
-        // NaN
-        assert_parse("NaN", "NaN");
-        assert_parse("Nan", "NaN");
-        assert_parse("NAN", "NaN");
-        assert_parse("NAn", "NaN");
-        assert_parse("naN", "NaN");
-        assert_parse("nan", "NaN");
-        assert_parse("nAN", "NaN");
-        assert_parse("nAn", "NaN");
-        assert_parse("   NaN   ", "NaN");
-
-        // Integer
-        assert_parse("0", "0");
-        assert_parse("-0", "0");
-        assert_parse("   -0   ", "0");
-        assert_parse("00000.", "0");
-        assert_parse("-00000.", "0");
-        assert_parse("128", "128");
-        assert_parse("-128", "-128");
-        assert_parse("65536", "65536");
-        assert_parse("-65536", "-65536");
-        assert_parse("4294967296", "4294967296");
-        assert_parse("-4294967296", "-4294967296");
-        assert_parse("18446744073709551616", "18446744073709551616");
-        assert_parse("-18446744073709551616", "-18446744073709551616");
-        assert_parse(
-            "340282366920938463463374607431768211456",
-            "340282366920938463463374607431768211456",
-        );
-        assert_parse(
-            "-340282366920938463463374607431768211456",
-            "-340282366920938463463374607431768211456",
-        );
-        assert_parse("000000000123", "123");
-        assert_parse("-000000000123", "-123");
-
-        // Floating-point number
-        assert_parse("0.0", "0.0");
-        assert_parse("-0.0", "0.0");
-        assert_parse("   -0.0   ", "0.0");
-        assert_parse(".0", "0.0");
-        assert_parse(".00000", "0.00000");
-        assert_parse("-.0", "0.0");
-        assert_parse("-.00000", "0.00000");
-        assert_parse("128.128", "128.128");
-        assert_parse("-128.128", "-128.128");
-        assert_parse("65536.65536", "65536.65536");
-        assert_parse("-65536.65536", "-65536.65536");
-        assert_parse("4294967296.4294967296", "4294967296.4294967296");
-        assert_parse("-4294967296.4294967296", "-4294967296.4294967296");
-        assert_parse(
-            "18446744073709551616.18446744073709551616",
-            "18446744073709551616.18446744073709551616",
-        );
-        assert_parse(
-            "-18446744073709551616.18446744073709551616",
-            "-18446744073709551616.18446744073709551616",
-        );
-        assert_parse(
-            "340282366920938463463374607431768211456.340282366920938463463374607431768211456",
-            "340282366920938463463374607431768211456.340282366920938463463374607431768211456",
-        );
-        assert_parse(
-            "-340282366920938463463374607431768211456.340282366920938463463374607431768211456",
-            "-340282366920938463463374607431768211456.340282366920938463463374607431768211456",
-        );
-        assert_parse("000000000123.000000000123", "123.000000000123");
-        assert_parse("-000000000123.000000000123", "-123.000000000123");
-
-        // Scientific notation
-        assert_parse("0e0", "0");
-        assert_parse("-0E-0", "0");
-        assert_parse("0000000000E0000000000", "0");
-        assert_parse("-0000000000E-0000000000", "0");
-        assert_parse("00000000001e0000000000", "1");
-        assert_parse("-00000000001e-0000000000", "-1");
-        assert_parse("00000000001e00000000001", "10");
-        assert_parse("-00000000001e-00000000001", "-0.1");
-        assert_parse("1e10", "10000000000");
-        assert_parse("-1e-10", "-0.0000000001");
-        assert_parse("0000001.23456000e3", "1234.56000");
-        assert_parse("-0000001.23456000E-3", "-0.00123456000");
-    }
 
     fn assert_from<V: Into<NumericVar>, E: AsRef<str>>(val: V, expected: E) {
         let numeric = val.into();
