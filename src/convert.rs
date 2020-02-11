@@ -641,6 +641,46 @@ impl TryFrom<NumericVar> for f64 {
     }
 }
 
+/// Simple and safe type conversions that may fail in a controlled way under some circumstances.
+/// Used to do reference-to-value conversions while not consuming the input value.
+pub trait TryFromRef<T>: Sized {
+    /// The type returned in the event of a conversion error.
+    type Error;
+
+    /// Performs the conversion.
+    fn try_from_ref(value: &T) -> Result<Self, Self::Error>;
+}
+
+macro_rules! impl_try_from_numeric_ref {
+    ($t: ty) => {
+        impl TryFromRef<NumericVar> for $t {
+            type Error = NumericTryFromError;
+
+            #[inline]
+            fn try_from_ref(value: &NumericVar) -> Result<Self, Self::Error> {
+                let mut new_value = NumericVar::nan();
+                new_value.set_from_var(&value);
+                new_value.try_into()
+            }
+        }
+    };
+}
+
+impl_try_from_numeric_ref!(i8);
+impl_try_from_numeric_ref!(i16);
+impl_try_from_numeric_ref!(i32);
+impl_try_from_numeric_ref!(i64);
+impl_try_from_numeric_ref!(i128);
+impl_try_from_numeric_ref!(u8);
+impl_try_from_numeric_ref!(u16);
+impl_try_from_numeric_ref!(u32);
+impl_try_from_numeric_ref!(u64);
+impl_try_from_numeric_ref!(u128);
+impl_try_from_numeric_ref!(f32);
+impl_try_from_numeric_ref!(f64);
+impl_try_from_numeric_ref!(isize);
+impl_try_from_numeric_ref!(usize);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1063,5 +1103,237 @@ mod tests {
         assert_try_into("1e309", std::f64::INFINITY);
         assert_try_into("2.2250738585072014e-308", std::f64::MIN_POSITIVE);
         assert!(try_into::<&str, f64>("NaN").is_nan());
+    }
+
+    fn try_into_ref<S: AsRef<str>, T: TryFromRef<NumericVar, Error = NumericTryFromError>>(
+        s: S,
+    ) -> T {
+        let n = s.as_ref().parse::<NumericVar>().unwrap();
+        let val = TryFromRef::try_from_ref(&n).unwrap();
+        val
+    }
+
+    fn assert_try_into_ref<
+        S: AsRef<str>,
+        T: TryFromRef<NumericVar, Error = NumericTryFromError> + PartialEq + Debug,
+    >(
+        s: S,
+        expected: T,
+    ) {
+        let val = try_into_ref::<S, T>(s);
+        assert_eq!(val, expected);
+    }
+
+    fn assert_try_into_ref_overflow<
+        T: TryFromRef<NumericVar, Error = NumericTryFromError> + Debug,
+    >(
+        s: &str,
+    ) {
+        let n = s.parse::<NumericVar>().unwrap();
+        let result: Result<T, NumericTryFromError> = TryFromRef::try_from_ref(&n);
+        assert_eq!(result.unwrap_err(), NumericTryFromError::overflow());
+    }
+
+    fn assert_try_into_ref_invalid<
+        T: TryFromRef<NumericVar, Error = NumericTryFromError> + Debug,
+    >(
+        s: &str,
+    ) {
+        let n = s.parse::<NumericVar>().unwrap();
+        let result: Result<T, NumericTryFromError> = TryFromRef::try_from_ref(&n);
+        assert_eq!(result.unwrap_err(), NumericTryFromError::invalid());
+    }
+
+    #[test]
+    fn into_i8_ref() {
+        assert_try_into_ref("0", 0i8);
+        assert_try_into_ref("1", 1i8);
+        assert_try_into_ref("-1", -1i8);
+        assert_try_into_ref("127", 127i8);
+        assert_try_into_ref("-128", -128);
+        assert_try_into_ref_overflow::<i8>("128");
+        assert_try_into_ref_overflow::<i8>("-129");
+        assert_try_into_ref_invalid::<i8>("NaN");
+    }
+
+    #[test]
+    fn into_i16_ref() {
+        assert_try_into_ref("0", 0i16);
+        assert_try_into_ref("1", 1i16);
+        assert_try_into_ref("-1", -1i16);
+        assert_try_into_ref("32767", 32767i16);
+        assert_try_into_ref("-32768", -32768i16);
+        assert_try_into_ref_overflow::<i16>("32768");
+        assert_try_into_ref_overflow::<i16>("-32769");
+        assert_try_into_ref_invalid::<i16>("NaN");
+    }
+
+    #[test]
+    fn into_i32_ref() {
+        assert_try_into_ref("0", 0i32);
+        assert_try_into_ref("1", 1i32);
+        assert_try_into_ref("-1", -1i32);
+        assert_try_into_ref("2147483647", 2147483647i32);
+        assert_try_into_ref("-2147483648", -2147483648i32);
+        assert_try_into_ref_overflow::<i32>("2147483648");
+        assert_try_into_ref_overflow::<i32>("-2147483649");
+        assert_try_into_ref_invalid::<i32>("NaN");
+    }
+
+    #[test]
+    fn into_i64_ref() {
+        assert_try_into_ref("0", 0i64);
+        assert_try_into_ref("1", 1i64);
+        assert_try_into_ref("-1", -1i64);
+        assert_try_into_ref("9223372036854775807", 9223372036854775807i64);
+        assert_try_into_ref("-9223372036854775808", -9223372036854775808i64);
+        assert_try_into_ref_overflow::<i64>("9223372036854775808");
+        assert_try_into_ref_overflow::<i64>("-9223372036854775809");
+        assert_try_into_ref_invalid::<i64>("NaN");
+    }
+
+    #[test]
+    fn into_i128_ref() {
+        assert_try_into_ref("0", 0i128);
+        assert_try_into_ref("1", 1i128);
+        assert_try_into_ref("-1", -1i128);
+        assert_try_into_ref(
+            "170141183460469231731687303715884105727",
+            170141183460469231731687303715884105727i128,
+        );
+        assert_try_into_ref(
+            "-170141183460469231731687303715884105728",
+            -170141183460469231731687303715884105728i128,
+        );
+        assert_try_into_ref_overflow::<i128>("170141183460469231731687303715884105728");
+        assert_try_into_ref_overflow::<i128>("-170141183460469231731687303715884105729");
+        assert_try_into_ref_invalid::<i128>("NaN");
+    }
+
+    #[test]
+    fn into_u8_ref() {
+        assert_try_into_ref("0", 0u8);
+        assert_try_into_ref("1", 1u8);
+        assert_try_into_ref("255", 255u8);
+        assert_try_into_ref_overflow::<u8>("256");
+        assert_try_into_ref_overflow::<u8>("-1");
+        assert_try_into_ref_invalid::<u8>("NaN");
+    }
+
+    #[test]
+    fn into_u16_ref() {
+        assert_try_into_ref("0", 0u16);
+        assert_try_into_ref("1", 1u16);
+        assert_try_into_ref("65535", 65535u16);
+        assert_try_into_ref_overflow::<u16>("65536");
+        assert_try_into_ref_overflow::<u16>("-1");
+        assert_try_into_ref_invalid::<u16>("NaN");
+    }
+
+    #[test]
+    fn into_u32_ref() {
+        assert_try_into_ref("0", 0u32);
+        assert_try_into_ref("1", 1u32);
+        assert_try_into_ref("4294967295", 4294967295u32);
+        assert_try_into_ref_overflow::<u32>("4294967296");
+        assert_try_into_ref_overflow::<u32>("-1");
+        assert_try_into_ref_invalid::<u32>("NaN");
+    }
+
+    #[test]
+    fn into_u64_ref() {
+        assert_try_into_ref("0", 0u64);
+        assert_try_into_ref("1", 1u64);
+        assert_try_into_ref("18446744073709551615", 18446744073709551615u64);
+        assert_try_into_ref_overflow::<u64>("18446744073709551616");
+        assert_try_into_ref_overflow::<u64>("-1");
+        assert_try_into_ref_invalid::<u64>("NaN");
+    }
+
+    #[test]
+    fn into_u128_ref() {
+        assert_try_into_ref("0", 0u128);
+        assert_try_into_ref("1", 1u128);
+        assert_try_into_ref(
+            "340282366920938463463374607431768211455",
+            340282366920938463463374607431768211455u128,
+        );
+        assert_try_into_ref_overflow::<u128>("340282366920938463463374607431768211456");
+        assert_try_into_ref_overflow::<u128>("-1");
+        assert_try_into_ref_invalid::<u128>("NaN");
+    }
+
+    #[test]
+    fn into_usize_ref() {
+        assert_try_into_ref("0", 0usize);
+        assert_try_into_ref("1", 1usize);
+        if std::mem::size_of::<usize>() == 8 {
+            assert_try_into_ref("18446744073709551615", 18446744073709551615usize);
+            assert_try_into_ref_overflow::<usize>("18446744073709551616");
+            assert_try_into_ref_overflow::<usize>("-1");
+        } else if std::mem::size_of::<usize>() == 4 {
+            assert_try_into_ref("4294967295", 4294967295usize);
+            assert_try_into_ref_overflow::<usize>("4294967296");
+            assert_try_into_ref_overflow::<usize>("-1");
+        }
+        assert_try_into_ref_invalid::<usize>("NaN");
+    }
+
+    #[test]
+    fn into_isize_ref() {
+        assert_try_into_ref("0", 0isize);
+        assert_try_into_ref("1", 1isize);
+        assert_try_into_ref("-1", -1isize);
+        if std::mem::size_of::<isize>() == 8 {
+            assert_try_into_ref("9223372036854775807", 9223372036854775807isize);
+            assert_try_into_ref("-9223372036854775808", -9223372036854775808isize);
+            assert_try_into_ref_overflow::<isize>("9223372036854775808");
+            assert_try_into_ref_overflow::<isize>("-9223372036854775809");
+        } else if std::mem::size_of::<isize>() == 4 {
+            assert_try_into_ref("2147483647", 2147483647isize);
+            assert_try_into_ref("-2147483648", -2147483648isize);
+            assert_try_into_ref_overflow::<isize>("2147483648");
+            assert_try_into_ref_overflow::<isize>("-2147483649");
+        }
+        assert_try_into_ref_invalid::<isize>("NaN");
+    }
+
+    #[test]
+    fn into_f32_ref() {
+        assert_try_into_ref("0", 0f32);
+        assert_try_into_ref("1", 1f32);
+        assert_try_into_ref("0.000001", 0.000001f32);
+        assert_try_into_ref("0.0000001", 0.0000001f32);
+        assert_try_into_ref("0.555555", 0.555555f32);
+        assert_try_into_ref("0.55555599", 0.555556f32);
+        assert_try_into_ref("0.999999", 0.999999f32);
+        assert_try_into_ref("0.99999999", 1.0f32);
+        assert_try_into_ref("1.00001", 1.00001f32);
+        assert_try_into_ref("1.00000001", 1.0f32);
+        assert_try_into_ref("1.23456789e10", 1.23456789e10f32);
+        assert_try_into_ref("1.23456789e-10", 1.23456789e-10f32);
+        assert_try_into_ref("3.40282347e+38", std::f32::MAX);
+        assert_try_into_ref("-3.40282347e+38", std::f32::MIN);
+        assert_try_into_ref("1e39", std::f32::INFINITY);
+        assert_try_into_ref("1.17549435e-38", std::f32::MIN_POSITIVE);
+        assert!(try_into_ref::<&str, f32>("NaN").is_nan());
+    }
+
+    #[test]
+    fn into_f64_ref() {
+        assert_try_into_ref("0", 0f64);
+        assert_try_into_ref("1", 1f64);
+        assert_try_into_ref("0.000000000000001", 0.000000000000001f64);
+        assert_try_into_ref("0.555555555555555", 0.555555555555555f64);
+        assert_try_into_ref("0.55555555555555599", 0.555555555555556f64);
+        assert_try_into_ref("0.999999999999999", 0.999999999999999f64);
+        assert_try_into_ref("0.99999999999999999", 1.0f64);
+        assert_try_into_ref("1.00000000000001", 1.00000000000001f64);
+        assert_try_into_ref("1.0000000000000001", 1.0f64);
+        assert_try_into_ref("1.7976931348623157e+308", std::f64::MAX);
+        assert_try_into_ref("-1.7976931348623157e+308", std::f64::MIN);
+        assert_try_into_ref("1e309", std::f64::INFINITY);
+        assert_try_into_ref("2.2250738585072014e-308", std::f64::MIN_POSITIVE);
+        assert!(try_into_ref::<&str, f64>("NaN").is_nan());
     }
 }

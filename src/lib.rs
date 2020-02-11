@@ -6,6 +6,7 @@ mod convert;
 mod error;
 mod parse;
 
+pub use crate::convert::TryFromRef;
 pub use crate::error::NumericParseError;
 pub use crate::error::NumericTryFromError;
 
@@ -279,7 +280,6 @@ impl NumericVar {
     /// Set this numeric from other numeric.
     ///
     /// Note: If there are digits, we will reserve one more digit for rounding.
-    #[allow(dead_code)]
     fn set_from_var(&mut self, value: &NumericVar) {
         self.ndigits = value.ndigits;
         self.weight = value.weight;
