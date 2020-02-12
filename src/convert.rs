@@ -641,23 +641,13 @@ impl TryFrom<NumericVar> for f64 {
     }
 }
 
-/// Simple and safe type conversions that may fail in a controlled way under some circumstances.
-/// Used to do reference-to-value conversions while not consuming the input value.
-pub trait TryFromRef<T>: Sized {
-    /// The type returned in the event of a conversion error.
-    type Error;
-
-    /// Performs the conversion.
-    fn try_from_ref(value: &T) -> Result<Self, Self::Error>;
-}
-
 macro_rules! impl_try_from_numeric_ref {
     ($t: ty) => {
-        impl TryFromRef<NumericVar> for $t {
+        impl TryFrom<&NumericVar> for $t {
             type Error = NumericTryFromError;
 
             #[inline]
-            fn try_from_ref(value: &NumericVar) -> Result<Self, Self::Error> {
+            fn try_from(value: &NumericVar) -> Result<Self, Self::Error> {
                 let mut new_value = NumericVar::nan();
                 new_value.set_from_var(&value);
                 new_value.try_into()
@@ -680,6 +670,44 @@ impl_try_from_numeric_ref!(f32);
 impl_try_from_numeric_ref!(f64);
 impl_try_from_numeric_ref!(isize);
 impl_try_from_numeric_ref!(usize);
+
+/// Simple and safe type conversions that may fail in a controlled way under some circumstances.
+/// Used to do reference-to-value conversions while not consuming the input value.
+pub trait TryFromRef<T>: Sized {
+    /// The type returned in the event of a conversion error.
+    type Error;
+
+    /// Performs the conversion.
+    fn try_from_ref(value: &T) -> Result<Self, Self::Error>;
+}
+
+macro_rules! impl_try_from_ref_numeric {
+    ($t: ty) => {
+        impl TryFromRef<NumericVar> for $t {
+            type Error = NumericTryFromError;
+
+            #[inline]
+            fn try_from_ref(value: &NumericVar) -> Result<Self, Self::Error> {
+                TryFrom::try_from(value)
+            }
+        }
+    };
+}
+
+impl_try_from_ref_numeric!(i8);
+impl_try_from_ref_numeric!(i16);
+impl_try_from_ref_numeric!(i32);
+impl_try_from_ref_numeric!(i64);
+impl_try_from_ref_numeric!(i128);
+impl_try_from_ref_numeric!(u8);
+impl_try_from_ref_numeric!(u16);
+impl_try_from_ref_numeric!(u32);
+impl_try_from_ref_numeric!(u64);
+impl_try_from_ref_numeric!(u128);
+impl_try_from_ref_numeric!(f32);
+impl_try_from_ref_numeric!(f64);
+impl_try_from_ref_numeric!(isize);
+impl_try_from_ref_numeric!(usize);
 
 #[cfg(test)]
 mod tests {
