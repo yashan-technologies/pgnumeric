@@ -1,5 +1,7 @@
 // Copyright 2020 CoD Team
 
+//! Numeric error handling.
+
 use std::error::Error;
 use std::fmt;
 use std::num::ParseFloatError;

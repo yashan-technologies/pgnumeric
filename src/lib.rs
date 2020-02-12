@@ -4,6 +4,7 @@
 
 mod convert;
 mod error;
+mod ops;
 mod parse;
 
 pub use crate::convert::TryFromRef;
@@ -83,6 +84,36 @@ impl NumericVar {
         }
     }
 
+    /// Creates a zero numeric.
+    pub const fn zero() -> Self {
+        Self {
+            ndigits: 0,
+            weight: 0,
+            sign: NUMERIC_POS,
+            dscale: 0,
+            buf: Vec::new(),
+            offset: 0,
+        }
+    }
+
+    /// Checks if `self` is `NaN`.
+    #[inline]
+    pub const fn is_nan(&self) -> bool {
+        self.sign == NUMERIC_NAN
+    }
+
+    /// Checks if `self` is positive.
+    #[inline]
+    pub const fn is_positive(&self) -> bool {
+        self.sign == NUMERIC_POS
+    }
+
+    /// Checks if `self` is negative.
+    #[inline]
+    pub const fn is_negative(&self) -> bool {
+        self.sign == NUMERIC_NEG
+    }
+
     /// Returns immutable digits buffer.
     #[inline]
     fn digits(&self) -> &[NumericDigit] {
@@ -97,21 +128,27 @@ impl NumericVar {
         &mut self.buf.as_mut_slice()[self.offset..self.offset + self.ndigits as usize]
     }
 
-    /// Checks if the value is `NaN`.
-    #[inline]
-    pub fn is_nan(&self) -> bool {
-        self.sign == NUMERIC_NAN
-    }
-
     /// Allocates digits buffer.
-    fn alloc(&mut self, ndigits: i32) {
+    fn alloc_buf(&mut self, ndigits: i32) {
         self.buf = Vec::with_capacity(ndigits as usize + 1);
         unsafe {
             self.buf.set_len(ndigits as usize + 1);
         }
-        self.buf[0] = 0;
+        self.buf[0] = 0; // spare digit for later rounding
         self.offset = 1;
         self.ndigits = ndigits;
+    }
+
+    /// Sets `self` to ZERO.
+    ///
+    /// Note: its dscale is not touched.
+    #[allow(dead_code)]
+    fn zeroed(&mut self) {
+        self.ndigits = 0;
+        self.weight = 0;
+        self.sign = NUMERIC_POS;
+        self.buf = Vec::new();
+        self.offset = 0;
     }
 
     /// Round the value of a variable to no more than rscale decimal digits
@@ -141,11 +178,11 @@ impl NumericVar {
                 self.ndigits = ndigits;
 
                 let digits = &mut self.buf.as_mut_slice()[self.offset..];
-                let mut carray: i32 = 0;
+                let mut carry: i32 = 0;
 
                 if di == 0 {
                     if digits[ndigits as usize] >= HALF_NBASE {
-                        carray = 1;
+                        carry = 1;
                     }
                 } else {
                     // Must round within last NBASE digit
@@ -158,7 +195,7 @@ impl NumericVar {
                         pow10 += digits[ndigits as usize];
                         if pow10 >= NBASE as NumericDigit {
                             pow10 -= NBASE as NumericDigit;
-                            carray = 1;
+                            carry = 1;
                         }
                         digits[ndigits as usize] = pow10;
                     }
@@ -169,17 +206,17 @@ impl NumericVar {
                 let offset = self.offset;
 
                 // Propagate carry if needed
-                while carray > 0 {
+                while carry > 0 {
                     ndigits -= 1;
                     let i = (offset as i32 + ndigits) as usize;
-                    carray += digits[i] as i32;
+                    carry += digits[i] as i32;
 
-                    if carray >= NBASE as i32 {
-                        digits[i] = (carray - NBASE as i32) as NumericDigit;
-                        carray = 1;
+                    if carry >= NBASE as i32 {
+                        digits[i] = (carry - NBASE as i32) as NumericDigit;
+                        carry = 1;
                     } else {
-                        digits[i] = carray as NumericDigit;
-                        carray = 0;
+                        digits[i] = carry as NumericDigit;
+                        carry = 0;
                     }
                 }
 
@@ -343,7 +380,7 @@ impl NumericVar {
         // trailing padding for digit alignment later
         dec_digits.extend_from_slice([0; DEC_DIGITS].as_ref());
 
-        self.alloc(ndigits);
+        self.alloc_buf(ndigits);
         self.sign = sign as i32;
         self.weight = weight;
         self.dscale = dec_scale;
@@ -365,6 +402,373 @@ impl NumericVar {
         self.strip();
 
         Ok(s)
+    }
+
+    /// Add the absolute values of two variables into result.
+    fn add_abs(&self, other: &Self) -> Self {
+        // copy these values into local vars for speed in inner loop
+        let var1_ndigits = self.ndigits;
+        let var2_ndigits = other.ndigits;
+        let var1_digits = self.digits();
+        let var2_digits = other.digits();
+
+        let res_weight = std::cmp::max(self.weight, other.weight) + 1;
+        let res_dscale = std::cmp::max(self.dscale, other.dscale);
+
+        // Note: here we are figuring rscale in base-NBASE digits
+        let res_rscale = {
+            let rscale1 = self.ndigits - self.weight - 1;
+            let rscale2 = other.ndigits - other.weight - 1;
+            std::cmp::max(rscale1, rscale2)
+        };
+
+        let res_ndigits = {
+            let ndigits = res_rscale + res_weight + 1;
+            if ndigits > 0 {
+                ndigits
+            } else {
+                1
+            }
+        };
+
+        let mut res = Self::nan();
+        res.alloc_buf(res_ndigits);
+        let res_digits = res.digits_mut();
+
+        let mut carry: NumericDigit = 0;
+        let mut i1 = res_rscale + self.weight + 1;
+        let mut i2 = res_rscale + other.weight + 1;
+        for i in (0..res_ndigits as usize).rev() {
+            i1 -= 1;
+            i2 -= 1;
+
+            if i1 >= 0 && i1 < var1_ndigits {
+                carry += var1_digits[i1 as usize];
+            }
+            if i2 >= 0 && i2 < var2_ndigits {
+                carry += var2_digits[i2 as usize];
+            }
+
+            if carry >= NBASE as NumericDigit {
+                res_digits[i] = carry - NBASE as NumericDigit;
+                carry = 1;
+            } else {
+                res_digits[i] = carry;
+                carry = 0;
+            }
+        }
+
+        debug_assert_eq!(carry, 0); // else we failed to allow for carry out
+
+        res.ndigits = res_ndigits;
+        res.weight = res_weight;
+        res.dscale = res_dscale;
+
+        // Remove leading/trailing zeroes
+        res.strip();
+
+        res
+    }
+
+    /// Subtract the absolute value of `other` from the absolute value of `self`
+    /// and store in result.
+    ///
+    /// NOTE: ABS(`self`) MUST BE GREATER OR EQUAL ABS(`other`) !!!
+    fn sub_abs(&self, other: &Self) -> Self {
+        // copy these values into local vars for speed in inner loop
+        let var1_ndigits = self.ndigits;
+        let var2_ndigits = other.ndigits;
+        let var1_digits = self.digits();
+        let var2_digits = other.digits();
+
+        let res_weight = self.weight;
+        let res_dscale = std::cmp::max(self.dscale, other.dscale);
+
+        // Note: here we are figuring rscale in base-NBASE digits
+        let res_rscale = {
+            let rscale1 = self.ndigits - self.weight - 1;
+            let rscale2 = other.ndigits - other.weight - 1;
+            std::cmp::max(rscale1, rscale2)
+        };
+
+        let res_ndigits = {
+            let ndigits = res_rscale + res_weight + 1;
+            if ndigits <= 0 {
+                1
+            } else {
+                ndigits
+            }
+        };
+
+        let mut res = Self::nan();
+        res.alloc_buf(res_ndigits);
+        let res_digits = res.digits_mut();
+
+        let mut borrow: NumericDigit = 0;
+        let mut i1 = res_rscale + self.weight + 1;
+        let mut i2 = res_rscale + other.weight + 1;
+        for i in (0..res_ndigits as usize).rev() {
+            i1 -= 1;
+            i2 -= 1;
+
+            if i1 >= 0 && i1 < var1_ndigits {
+                borrow += var1_digits[i1 as usize];
+            }
+            if i2 >= 0 && i2 < var2_ndigits {
+                borrow -= var2_digits[i2 as usize];
+            }
+
+            if borrow < 0 {
+                res_digits[i] = borrow + NBASE as NumericDigit;
+                borrow = -1;
+            } else {
+                res_digits[i] = borrow;
+                borrow = 0;
+            }
+        }
+
+        debug_assert_eq!(borrow, 0); // else caller gave us self < other
+
+        res.ndigits = res_ndigits;
+        res.weight = res_weight;
+        res.dscale = res_dscale;
+
+        // Remove leading/trailing zeroes
+        res.strip();
+
+        res
+    }
+
+    /// Compare the absolute values of `self` and `other`
+    ///
+    /// * -1 for ABS(`self`) < ABS(`other`)
+    /// * 0 for ABS(`self`) == ABS(`other`)
+    /// * 1 for ABS(`self`) > ABS(`other`)
+    fn cmp_abs(&self, other: &Self) -> i32 {
+        let var1_ndigits = self.ndigits;
+        let var1_digits = self.digits();
+        let mut var1_weight = self.weight;
+
+        let var2_ndigits = other.ndigits;
+        let var2_digits = other.digits();
+        let mut var2_weight = other.weight;
+
+        let mut i1 = 0;
+        let mut i2 = 0;
+
+        // Check any digits before the first common digit
+
+        while var1_weight > var2_weight && i1 < var1_ndigits {
+            if var1_digits[i1 as usize] != 0 {
+                return 1;
+            }
+
+            i1 += 1;
+            var1_weight -= 1;
+        }
+        while var2_weight > var1_weight && i2 < var2_ndigits {
+            if var2_digits[i2 as usize] != 0 {
+                return -1;
+            }
+
+            i2 += 1;
+            var2_weight -= 1;
+        }
+
+        // At this point, either var1_weight == var2_weight or we've run out of digits
+
+        if var1_weight == var2_weight {
+            while i1 < var1_ndigits && i2 < var2_ndigits {
+                let stat = var1_digits[i1 as usize] - var2_digits[i2 as usize];
+                if stat != 0 {
+                    return if stat > 0 { 1 } else { -1 };
+                } else {
+                    i1 += 1;
+                    i2 += 1;
+                }
+            }
+        }
+
+        // At this point, we've run out of digits on one side or the other; so any
+        // remaining nonzero digits imply that side is larger
+        while i1 < var1_ndigits {
+            if var1_digits[i1 as usize] != 0 {
+                return 1;
+            }
+
+            i1 += 1;
+        }
+        while i2 < var2_ndigits {
+            if var2_digits[i2 as usize] != 0 {
+                return -1;
+            }
+
+            i2 += 1;
+        }
+
+        return 0;
+    }
+
+    /// Full version of add functionality on variable level (handling signs).
+    fn add(&self, other: &Self) -> Self {
+        if self.is_nan() || other.is_nan() {
+            return Self::nan();
+        }
+
+        // Decide on the signs of the two variables what to do
+        if self.is_positive() {
+            if other.is_positive() {
+                // Both are positive
+                // result = +(ABS(self) + ABS(other))
+                let mut result = self.add_abs(other);
+                result.sign = NUMERIC_POS;
+                return result;
+            } else {
+                let cmp = self.cmp_abs(other);
+                match cmp {
+                    0 => {
+                        // ABS(self) == ABS(other)
+                        // result = ZERO
+                        let mut result = Self::zero();
+                        result.dscale = std::cmp::max(self.dscale, other.dscale);
+                        return result;
+                    }
+                    1 => {
+                        // ABS(self) > ABS(other)
+                        // result = +(ABS(self) - ABS(other))
+                        let mut result = self.sub_abs(other);
+                        result.sign = NUMERIC_POS;
+                        return result;
+                    }
+                    -1 => {
+                        // ABS(self) < ABS(other)
+                        // result = -(ABS(other) - ABS(self))
+                        let mut result = other.sub_abs(self);
+                        result.sign = NUMERIC_NEG;
+                        return result;
+                    }
+                    _ => panic!("invalid comparison result"),
+                }
+            }
+        } else {
+            if other.is_positive() {
+                // self is negative, other is positive
+                // Must compare absolute values
+                let cmp = self.cmp_abs(other);
+                match cmp {
+                    0 => {
+                        // ABS(self) == ABS(other)
+                        // result = ZERO
+                        let mut result = Self::zero();
+                        result.dscale = std::cmp::max(self.dscale, other.dscale);
+                        return result;
+                    }
+                    1 => {
+                        // ABS(self) > ABS(other)
+                        // result = -(ABS(self) - ABS(other))
+                        let mut result = self.sub_abs(other);
+                        result.sign = NUMERIC_NEG;
+                        return result;
+                    }
+                    -1 => {
+                        // ABS(self) < ABS(other)
+                        // result = +(ABS(other) - ABS(self))
+                        let mut result = other.sub_abs(self);
+                        result.sign = NUMERIC_POS;
+                        return result;
+                    }
+                    _ => panic!("invalid comparison result"),
+                }
+            } else {
+                // Both are negative
+                // result = -(ABS(self) + ABS(other))
+                let mut result = self.add_abs(other);
+                result.sign = NUMERIC_NEG;
+                return result;
+            }
+        }
+    }
+
+    /// Full version of sub functionality on variable level (handling signs).
+    fn sub(&self, other: &Self) -> Self {
+        if self.is_nan() || other.is_nan() {
+            return Self::nan();
+        }
+
+        // Decide on the signs of the two variables what to do
+        if self.is_positive() {
+            if other.is_negative() {
+                // self is positive, other is negative
+                // result = +(ABS(self) + ABS(other))
+                let mut result = self.add_abs(other);
+                result.sign = NUMERIC_POS;
+                return result;
+            } else {
+                // Both are positive
+                // Must compare absolute values
+                let cmp = self.cmp_abs(other);
+                match cmp {
+                    0 => {
+                        // ABS(self) == ABS(other)
+                        // result = ZERO
+                        let mut result = Self::zero();
+                        result.dscale = std::cmp::max(self.dscale, other.dscale);
+                        return result;
+                    }
+                    1 => {
+                        // ABS(self) > ABS(other)
+                        // result = +(ABS(self) - ABS(other))
+                        let mut result = self.sub_abs(other);
+                        result.sign = NUMERIC_POS;
+                        return result;
+                    }
+                    -1 => {
+                        // ABS(self) < ABS(other)
+                        // result = -(ABS(other) - ABS(self))
+                        let mut result = other.sub_abs(self);
+                        result.sign = NUMERIC_NEG;
+                        return result;
+                    }
+                    _ => panic!("invalid comparison result"),
+                }
+            }
+        } else {
+            if other.is_negative() {
+                // Both are negative
+                // Must compare absolute values
+                let cmp = self.cmp_abs(other);
+                match cmp {
+                    0 => {
+                        // ABS(self) == ABS(other)
+                        // result = ZERO
+                        let mut result = Self::zero();
+                        result.dscale = std::cmp::max(self.dscale, other.dscale);
+                        return result;
+                    }
+                    1 => {
+                        // ABS(self) > ABS(other)
+                        // result = -(ABS(self) - ABS(other))
+                        let mut result = self.sub_abs(other);
+                        result.sign = NUMERIC_NEG;
+                        return result;
+                    }
+                    -1 => {
+                        // ABS(self) < ABS(other)
+                        // result = +(ABS(other) - ABS(self))
+                        let mut result = other.sub_abs(self);
+                        result.sign = NUMERIC_POS;
+                        return result;
+                    }
+                    _ => panic!("invalid comparison result"),
+                }
+            } else {
+                // var1 is negative, var2 is positive
+                // result = -(ABS(self) + ABS(other))
+                let mut result = self.add_abs(other);
+                result.sign = NUMERIC_NEG;
+                return result;
+            }
+        }
     }
 }
 

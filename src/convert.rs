@@ -230,7 +230,7 @@ fn from_unsigned<T: Unsigned>(val: T) -> NumericVar {
 }
 
 fn set_var_from_unsigned<T: Unsigned>(var: &mut NumericVar, val: T) {
-    var.alloc(T::MAX_NDIGITS as i32);
+    var.alloc_buf(T::MAX_NDIGITS as i32);
 
     let mut u_val = val;
     let digits = var.digits_mut();
