@@ -17,7 +17,7 @@ use std::fmt;
 const NBASE: i32 = 10000;
 const HALF_NBASE: NumericDigit = 5000;
 const DEC_DIGITS: usize = 4;
-//const MUL_GUARD_DIGITS: i32 = 2;
+const MUL_GUARD_DIGITS: i32 = 2;
 //const DIV_GUARD_DIGITS: i32 = 4;
 
 //const NUMERIC_SIGN_MASK: i32 = 0xC000;
@@ -769,6 +769,168 @@ impl NumericVar {
                 return result;
             }
         }
+    }
+
+    /// Multiplication on variable level.
+    /// Product of self * other is returned.
+    /// Result is rounded to no more than rscale fractional digits.
+    fn mul(&self, other: &Self, rscale: i32) -> Self {
+        if self.is_nan() || other.is_nan() {
+            return Self::nan();
+        }
+
+        // Arrange for var1 to be the shorter of the two numbers.  This improves
+        // performance because the inner multiplication loop is much simpler than
+        // the outer loop, so it's better to have a smaller number of iterations
+        // of the outer loop.  This also reduces the number of times that the
+        // accumulator array needs to be normalized.
+        let (var1, var2) = if self.ndigits > other.ndigits {
+            (other, self)
+        } else {
+            (self, other)
+        };
+
+        // copy these values into local vars for speed in inner loop
+        let var1_ndigits = var1.ndigits;
+        let var1_digits = var1.digits();
+        let var2_ndigits = var2.ndigits;
+        let var2_digits = var2.digits();
+
+        if var1_ndigits == 0 || var2_ndigits == 0 {
+            // one or both inputs is zero; so is result
+            let mut result = Self::zero();
+            result.dscale = rscale;
+            return result;
+        }
+
+        // Determine result sign and (maximum possible) weight
+        let res_sign = if var1.sign == var2.sign {
+            NUMERIC_POS
+        } else {
+            NUMERIC_NEG
+        };
+        let res_weight = var1.weight + var2.weight + 2;
+
+        // Determine the number of result digits to compute.  If the exact result
+        // would have more than rscale fractional digits, truncate the computation
+        // with MUL_GUARD_DIGITS guard digits, i.e., ignore input digits that
+        // would only contribute to the right of that.  (This will give the exact
+        // rounded-to-rscale answer unless carries out of the ignored positions
+        // would have propagated through more than MUL_GUARD_DIGITS digits.)
+        //
+        // Note: an exact computation could not produce more than var1ndigits +
+        // var2ndigits digits, but we allocate one extra output digit in case
+        // rscale-driven rounding produces a carry out of the highest exact digit.
+        let res_ndigits = {
+            let ndigits = var1.ndigits + var2.ndigits + 1;
+            let max_digits = res_weight
+                + 1
+                + (rscale + DEC_DIGITS as i32 - 1) / DEC_DIGITS as i32
+                + MUL_GUARD_DIGITS;
+            std::cmp::min(ndigits, max_digits)
+        };
+
+        if res_ndigits < 3 {
+            // All input digits will be ignored; so result is zero
+            let mut result = Self::zero();
+            result.dscale = rscale;
+            return result;
+        }
+
+        // We do the arithmetic in an array "dig[]" of signed int32's.  Since
+        // INT32_MAX is noticeably larger than NBASE*NBASE, this gives us headroom
+        // to avoid normalizing carries immediately.
+        //
+        // max_dig tracks the maximum possible value of any dig[] entry; when this
+        // threatens to exceed INT32_MAX, we take the time to propagate carries.
+        // Furthermore, we need to ensure that overflow doesn't occur during the
+        // carry propagation passes either.  The carry values could be as much as
+        // INT32_MAX/NBASE, so really we must normalize when digits threaten to
+        // exceed INT32_MAX - INT32_MAX/NBASE.
+        //
+        // To avoid overflow in max_dig itself, it actually represents the max
+        // possible value divided by NBASE-1, ie, at the top of the loop it is
+        // known that no dig[] entry exceeds max_dig * (NBASE-1).
+        let mut dig = vec![0; res_ndigits as usize * std::mem::size_of::<i32>()];
+        let mut max_dig = 0i32;
+
+        // The least significant digits of var1 should be ignored if they don't
+        // contribute directly to the first res_ndigits digits of the result that
+        // we are computing.
+        //
+        // Digit i1 of var1 and digit i2 of var2 are multiplied and added to digit
+        // i1+i2+2 of the accumulator array, so we need only consider digits of
+        // var1 for which i1 <= res_ndigits - 3.
+        let bound = std::cmp::min(var1_ndigits - 1, res_ndigits - 3);
+        for i1 in (0..=bound).rev() {
+            let var1_digit = var1_digits[i1 as usize] as i32;
+            if var1_digit == 0 {
+                continue;
+            }
+
+            // Time to normalize?
+            max_dig += var1_digit;
+            if max_dig > ((i32::max_value() - i32::max_value() / NBASE) / (NBASE - 1)) {
+                // Yes, do it
+                let mut carry = 0;
+                for i in (0..res_ndigits).rev() {
+                    let mut new_dig = dig[i as usize] + carry;
+                    if new_dig >= NBASE {
+                        carry = new_dig / NBASE;
+                        new_dig -= carry * NBASE;
+                    } else {
+                        carry = 0;
+                    }
+                    dig[i as usize] = new_dig;
+                }
+                debug_assert_eq!(carry, 0);
+                // Reset max_dig to indicate new worst-case
+                max_dig = 1 + var1_digit;
+            }
+
+            // Add the appropriate multiple of var2 into the accumulator.
+            //
+            // As above, digits of var2 can be ignored if they don't contribute,
+            // so we only include digits for which i1+i2+2 <= res_ndigits - 1.
+            let bound = std::cmp::min(var2_ndigits - 1, res_ndigits - i1 - 3);
+            let mut i = i1 + bound + 2;
+            for i2 in (0..=bound).rev() {
+                dig[i as usize] += var1_digit * var2_digits[i2 as usize] as i32;
+                i -= 1;
+            }
+        }
+
+        // Now we do a final carry propagation pass to normalize the result, which
+        // we combine with storing the result digits into the output. Note that
+        // this is still done at full precision w/guard digits.
+        let mut result = Self::nan();
+        result.alloc_buf(res_ndigits);
+        let res_digits = result.digits_mut();
+        let mut carry = 0;
+        for i in (0..res_ndigits).rev() {
+            let mut new_dig = dig[i as usize] as i32 + carry;
+            if new_dig >= NBASE {
+                carry = new_dig / NBASE;
+                new_dig -= carry * NBASE;
+            } else {
+                carry = 0;
+            }
+            res_digits[i as usize] = new_dig as NumericDigit;
+        }
+        debug_assert_eq!(carry, 0);
+
+        // Finally, round the result to the requested precision.
+
+        result.weight = res_weight;
+        result.sign = res_sign;
+
+        // Round to target rscale (and set result->dscale)
+        result.round(rscale);
+
+        // Strip leading and trailing zeroes
+        result.strip();
+
+        result
     }
 }
 
