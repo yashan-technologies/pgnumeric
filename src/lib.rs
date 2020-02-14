@@ -14,11 +14,27 @@ pub use crate::error::NumericTryFromError;
 use crate::parse::{parse_decimal, Decimal};
 use std::fmt;
 
+/// Limit on the precision (and hence scale) specifiable in a NUMERIC typmod.
+/// Note that the implementation limit on the length of a numeric value is
+/// much larger --- beware of what you use this for!
+const NUMERIC_MAX_PRECISION: i32 = 1000;
+
+// Internal limits on the scales chosen for calculation results
+const NUMERIC_MAX_DISPLAY_SCALE: i32 = NUMERIC_MAX_PRECISION;
+const NUMERIC_MIN_DISPLAY_SCALE: i32 = 0;
+
+//const NUMERIC_MAX_RESULT_SCALE: i32 = NUMERIC_MAX_PRECISION * 2;
+
+/// For inherently inexact calculations such as division and square root,
+/// we try to get at least this many significant digits; the idea is to
+/// deliver a result no worse than f64 would.
+const NUMERIC_MIN_SIG_DIGITS: i32 = 16;
+
 const NBASE: i32 = 10000;
 const HALF_NBASE: NumericDigit = 5000;
 const DEC_DIGITS: usize = 4;
 const MUL_GUARD_DIGITS: i32 = 2;
-//const DIV_GUARD_DIGITS: i32 = 4;
+const DIV_GUARD_DIGITS: i32 = 4;
 
 //const NUMERIC_SIGN_MASK: i32 = 0xC000;
 const NUMERIC_POS: i32 = 0x0000;
@@ -932,6 +948,571 @@ impl NumericVar {
 
         result
     }
+
+    /// Default scale selection for division
+    ///
+    /// Returns the appropriate result scale for the division result.
+    fn select_div_scale(&self, other: &Self) -> i32 {
+        // The result scale of a division isn't specified in any SQL standard. For
+        // PostgreSQL we select a result scale that will give at least
+        // NUMERIC_MIN_SIG_DIGITS significant digits, so that numeric gives a
+        // result no less accurate than f64; but use a scale not less than
+        // either input's display scale.
+
+        // Get the actual (normalized) weight and first digit of each input.
+
+        let mut weight1 = 0; // values to use if self is zero
+        let mut first_digit1 = 0;
+        let var1_digits = self.digits();
+        for i in 0..self.ndigits {
+            first_digit1 = var1_digits[i as usize];
+            if first_digit1 != 0 {
+                weight1 = self.weight - i;
+                break;
+            }
+        }
+
+        let mut weight2 = 0; // values to use if other is zero
+        let mut first_digit2 = 0;
+        let var2_digits = other.digits();
+        for i in 0..other.ndigits {
+            first_digit2 = var2_digits[i as usize];
+            if first_digit2 != 0 {
+                weight2 = other.weight - i;
+                break;
+            }
+        }
+
+        // Estimate weight of quotient.  If the two first digits are equal, we
+        // can't be sure, but assume that self is less than other.
+        let qweight = {
+            let mut w = weight1 - weight2;
+            if first_digit1 <= first_digit2 {
+                w -= 1;
+            }
+            w
+        };
+
+        // Select result scale
+        let mut rscale = NUMERIC_MIN_SIG_DIGITS - qweight * DEC_DIGITS as i32;
+        rscale = std::cmp::max(rscale, self.dscale);
+        rscale = std::cmp::max(rscale, other.dscale);
+        rscale = std::cmp::max(rscale, NUMERIC_MIN_DISPLAY_SCALE);
+        rscale = std::cmp::min(rscale, NUMERIC_MAX_DISPLAY_SCALE);
+
+        rscale
+    }
+
+    /// Division on variable level. Quotient of `self` / `other` is returned.
+    /// The quotient is figured to exactly rscale fractional digits.
+    /// If round is true, it is rounded at the rscale'th digit; if false, it
+    /// is truncated (towards zero) at that digit.
+    ///
+    /// Returns `None` if `other == 0`.
+    fn div(&self, other: &Self, rscale: i32, round: bool) -> Option<Self> {
+        if self.is_nan() || other.is_nan() {
+            return Some(Self::nan());
+        }
+
+        // copy these values into local vars for speed in inner loop
+        let var1_ndigits = self.ndigits;
+        let var2_ndigits = other.ndigits;
+
+        // First of all division by zero check; we must not be handed an
+        // unnormalized divisor.
+        if var2_ndigits == 0 || other.digits()[0] == 0 {
+            return None;
+        }
+
+        // Now result zero check
+        if var1_ndigits == 0 {
+            let mut result = Self::zero();
+            result.dscale = rscale;
+            return Some(result);
+        }
+
+        // Determine the result sign, weight and number of digits to calculate.
+        // The weight figured here is correct if the emitted quotient has no
+        // leading zero digits; otherwise strip() will fix things up.
+        let res_sign = if self.sign == other.sign {
+            NUMERIC_POS
+        } else {
+            NUMERIC_NEG
+        };
+        let res_weight = self.weight - other.weight;
+        let res_ndigits = {
+            // The number of accurate result digits we need to produce
+            let mut ndigits = res_weight + 1 + (rscale + DEC_DIGITS as i32 - 1) / DEC_DIGITS as i32;
+            // ... but always at least 1
+            ndigits = std::cmp::max(ndigits, 1);
+            // If rounding needed, figure one more digit to ensure correct result
+            if round {
+                ndigits += 1;
+            }
+            ndigits
+        };
+
+        // The working dividend normally requires res_ndigits + var2_ndigits
+        // digits, but make it at least var1_ndigits so we can load all of var1
+        // into it.  (There will be an additional digit dividend[0] in the
+        // dividend space, but for consistency with Knuth's notation we don't
+        // count that in div_ndigits.)
+        let div_ndigits = {
+            let ndigits = res_ndigits + var2_ndigits;
+            std::cmp::max(ndigits, var1_ndigits)
+        };
+
+        // We need a workspace with room for the working dividend (div_ndigits+1
+        // digits) plus room for the possibly-normalized divisor (var2_ndigits
+        // digits).  It is convenient also to have a zero at divisor[0] with the
+        // actual divisor data in divisor[1 .. var2_ndigits].  Transferring the
+        // digits into the workspace also allows us to realloc the result (which
+        // might be the same as either input var) before we begin the main loop.
+        // Note that we use palloc0 to ensure that divisor[0], dividend[0], and
+        // any additional dividend positions beyond var1_ndigits, start out 0.
+        let mut workspace = vec![0 as NumericDigit; (div_ndigits + var2_ndigits + 2) as usize];
+        let (dividend, divisor) = workspace.split_at_mut(div_ndigits as usize + 1);
+        dividend[1..var1_ndigits as usize + 1].copy_from_slice(self.digits());
+        divisor[1..var2_ndigits as usize + 1].copy_from_slice(other.digits());
+
+        // Now we can alloc the result to hold the generated quotient digits.
+        let mut result = Self::nan();
+        result.alloc_buf(res_ndigits);
+        let res_digits = result.digits_mut();
+
+        if var2_ndigits == 1 {
+            // If there's only a single divisor digit, we can use a fast path (cf.
+            // Knuth section 4.3.1 exercise 16).
+            let divisor1 = divisor[1] as i32;
+            let mut carry = 0i32;
+            for i in 0..res_ndigits as usize {
+                carry = carry * NBASE + dividend[i + 1] as i32;
+                res_digits[i] = (carry / divisor1) as NumericDigit;
+                carry %= divisor1;
+            }
+        } else {
+            // The full multiple-place algorithm is taken from Knuth volume 2,
+            // Algorithm 4.3.1D.
+            //
+            // We need the first divisor digit to be >= NBASE/2.  If it isn't,
+            // make it so by scaling up both the divisor and dividend by the
+            // factor "d".  (The reason for allocating dividend[0] above is to
+            // leave room for possible carry here.)
+            if divisor[1] < HALF_NBASE {
+                let d = NBASE / (divisor[1] + 1) as i32;
+
+                let mut carry = 0i32;
+                for i in (1..=var2_ndigits as usize).rev() {
+                    carry += divisor[i] as i32 * d;
+                    divisor[i] = (carry % NBASE) as NumericDigit;
+                    carry /= NBASE;
+                }
+                debug_assert_eq!(carry, 0);
+
+                carry = 0;
+                // at this point only var1_ndigits of dividend can be nonzero
+                for i in (0..=var1_ndigits as usize).rev() {
+                    carry += dividend[i] as i32 * d;
+                    dividend[i] = (carry % NBASE) as NumericDigit;
+                    carry /= NBASE;
+                }
+                debug_assert_eq!(carry, 0);
+                debug_assert!(divisor[1] >= HALF_NBASE);
+            }
+
+            // First 2 divisor digits are used repeatedly in main loop
+            let divisor1 = divisor[1];
+            let divisor2 = divisor[2];
+
+            // Begin the main loop.  Each iteration of this loop produces the j'th
+            // quotient digit by dividing dividend[j .. j + var2ndigits] by the
+            // divisor; this is essentially the same as the common manual
+            // procedure for long division.
+            for j in 0..res_ndigits as usize {
+                // Estimate quotient digit from the first two dividend digits
+                let next2digits = dividend[j] as i32 * NBASE + dividend[j + 1] as i32;
+
+                // If next2digits are 0, then quotient digit must be 0 and there's
+                // no need to adjust the working dividend.  It's worth testing
+                // here to fall out ASAP when processing trailing zeroes in a
+                // dividend.
+                if next2digits == 0 {
+                    res_digits[j] = 0;
+                    continue;
+                }
+
+                let mut qhat = if dividend[j] == divisor1 {
+                    NBASE - 1
+                } else {
+                    next2digits / divisor1 as i32
+                };
+
+                // Adjust quotient digit if it's too large.  Knuth proves that
+                // after this step, the quotient digit will be either correct or
+                // just one too large.  (Note: it's OK to use dividend[j+2] here
+                // because we know the divisor length is at least 2.)
+                while divisor2 as i32 * qhat
+                    > (next2digits - qhat * divisor1 as i32) * NBASE + dividend[j + 2] as i32
+                {
+                    qhat -= 1;
+                }
+
+                // As above, need do nothing more when quotient digit is 0
+                if qhat > 0 {
+                    // Multiply the divisor by qhat, and subtract that from the
+                    // working dividend.  "carry" tracks the multiplication,
+                    // "borrow" the subtraction (could we fold these together?)
+                    let mut carry = 0;
+                    let mut borrow = 0;
+                    for i in (0..=var2_ndigits as usize).rev() {
+                        carry += divisor[i] as i32 * qhat;
+                        borrow -= carry % NBASE;
+                        carry /= NBASE;
+                        borrow += dividend[j + i] as i32;
+                        if borrow < 0 {
+                            dividend[j + i] = (borrow + NBASE) as NumericDigit;
+                            borrow = -1;
+                        } else {
+                            dividend[j + i] = borrow as NumericDigit;
+                            borrow = 0;
+                        }
+                    }
+                    debug_assert_eq!(carry, 0);
+
+                    // If we got a borrow out of the top dividend digit, then
+                    // indeed qhat was one too large.  Fix it, and add back the
+                    // divisor to correct the working dividend.  (Knuth proves
+                    // that this will occur only about 3/NBASE of the time; hence,
+                    // it's a good idea to test this code with small NBASE to be
+                    // sure this section gets exercised.)
+                    if borrow != 0 {
+                        qhat -= 1;
+                        carry = 0;
+                        for i in (0..=var2_ndigits as usize).rev() {
+                            carry += dividend[j + i] as i32 + divisor[i] as i32;
+                            if carry >= NBASE {
+                                dividend[j + i] = (carry - NBASE) as NumericDigit;
+                                carry = 1;
+                            } else {
+                                dividend[j + i] = carry as NumericDigit;
+                                carry = 0;
+                            }
+                        }
+                        // A carry should occur here to cancel the borrow above
+                        debug_assert_eq!(carry, 1);
+                    }
+                }
+
+                // And we're done with this quotient digit
+                res_digits[j] = qhat as NumericDigit;
+            }
+        }
+
+        // Finally, round or truncate the result to the requested precision.
+
+        result.weight = res_weight;
+        result.sign = res_sign;
+
+        // Round or truncate to target rscale (and set result->dscale)
+        if round {
+            result.round(rscale);
+        } else {
+            result.trunc(rscale);
+        }
+
+        // Strip leading and trailing zeroes
+        result.strip();
+
+        Some(result)
+    }
+
+    /// This has the same API as `div()`, but is implemented using the division
+    /// algorithm from the "FM" library, rather than Knuth's schoolbook-division
+    /// approach.  This is significantly faster but can produce inaccurate
+    /// results, because it sometimes has to propagate rounding to the left,
+    /// and so we can never be entirely sure that we know the requested digits
+    /// exactly.  We compute DIV_GUARD_DIGITS extra digits, but there is
+    /// no certainty that that's enough.  We use this only in the transcendental
+    /// function calculation routines, where everything is approximate anyway.
+    ///
+    /// Although we provide a "round" argument for consistency with `div()`,
+    /// it is unwise to use this function with round=false.  In truncation mode
+    /// it is possible to get a result with no significant digits, for example
+    /// with rscale=0 we might compute 0.99999... and truncate that to 0 when
+    /// the correct answer is 1.
+    ///
+    /// Returns `None` if `other == 0`.
+    #[allow(dead_code)]
+    fn div_fast(&self, other: &Self, rscale: i32, round: bool) -> Option<Self> {
+        if self.is_nan() || other.is_nan() {
+            return Some(Self::nan());
+        }
+
+        // copy these values into local vars for speed in inner loop
+        let var1_ndigits = self.ndigits;
+        let var1_digits = self.digits();
+        let var2_ndigits = other.ndigits;
+        let var2_digits = other.digits();
+
+        // First of all division by zero check; we must not be handed an
+        // unnormalized divisor.
+        if var2_ndigits == 0 || var2_digits[0] == 0 {
+            return None;
+        }
+
+        // Now result zero check
+        if var1_ndigits == 0 {
+            let mut result = Self::zero();
+            result.dscale = rscale;
+            return Some(result);
+        }
+
+        // Determine the result sign, weight and number of digits to calculate
+        let res_sign = if self.sign == other.sign {
+            NUMERIC_POS
+        } else {
+            NUMERIC_NEG
+        };
+        let res_weight = self.weight - other.weight + 1;
+        let div_ndigits = {
+            // The number of accurate result digits we need to produce
+            let mut ndigits = res_weight + 1 + (rscale + DEC_DIGITS as i32 - 1) / DEC_DIGITS as i32;
+            // Add guard digits for roundoff error
+            ndigits += DIV_GUARD_DIGITS;
+            if ndigits < DIV_GUARD_DIGITS {
+                ndigits = DIV_GUARD_DIGITS;
+            }
+            // Must be at least var1_ndigits, too, to simplify data-loading loop
+            if ndigits < var1_ndigits {
+                ndigits = var1_ndigits;
+            }
+            ndigits
+        };
+
+        // We do the arithmetic in an array "div[]" of signed int32's.  Since
+        // INT32_MAX is noticeably larger than NBASE*NBASE, this gives us headroom
+        // to avoid normalizing carries immediately.
+        //
+        // We start with div[] containing one zero digit followed by the
+        // dividend's digits (plus appended zeroes to reach the desired precision
+        // including guard digits).  Each step of the main loop computes an
+        // (approximate) quotient digit and stores it into div[], removing one
+        // position of dividend space.  A final pass of carry propagation takes
+        // care of any mistaken quotient digits.
+        let mut div = vec![0i32; div_ndigits as usize + 1];
+        for i in 0..var1_ndigits as usize {
+            div[i + 1] = var1_digits[i] as i32;
+        }
+
+        // We estimate each quotient digit using floating-point arithmetic, taking
+        // the first four digits of the (current) dividend and divisor.  This must
+        // be float to avoid overflow.  The quotient digits will generally be off
+        // by no more than one from the exact answer.
+        let mut fdivisor = var2_digits[0] as f64;
+        for i in 1..4 {
+            fdivisor *= NBASE as f64;
+            if i < var2_ndigits {
+                fdivisor += var2_digits[i as usize] as f64;
+            }
+        }
+        let fdivisor_inverse = 1.0 / fdivisor;
+
+        // max_div tracks the maximum possible absolute value of any div[] entry;
+        // when this threatens to exceed INT_MAX, we take the time to propagate
+        // carries.  Furthermore, we need to ensure that overflow doesn't occur
+        // during the carry propagation passes either.  The carry values may have
+        // an absolute value as high as INT_MAX/NBASE + 1, so really we must
+        // normalize when digits threaten to exceed INT_MAX - INT_MAX/NBASE - 1.
+        //
+        // To avoid overflow in max_div itself, it represents the max absolute
+        // value divided by NBASE-1, ie, at the top of the loop it is known that
+        // no div[] entry has an absolute value exceeding max_div * (NBASE-1).
+        //
+        // Actually, though, that holds good only for div[] entries after div[qi];
+        // the adjustment done at the bottom of the loop may cause div[qi + 1] to
+        // exceed the max_div limit, so that div[qi] in the next iteration is
+        // beyond the limit.  This does not cause problems, as explained below.
+        let mut max_div = 1;
+
+        // Outer loop computes next quotient digit, which will go into div[qi]
+        for qi in 0..div_ndigits as usize {
+            // Approximate the current dividend value
+            let mut fdividend = div[qi] as f64;
+            for i in 1..4usize {
+                fdividend *= NBASE as f64;
+                if (qi + i) as i32 <= div_ndigits {
+                    fdividend += div[qi + i] as f64;
+                }
+            }
+            // Compute the (approximate) quotient digit
+            let mut fquotient = fdividend * fdivisor_inverse;
+            let mut qdigit = if fquotient >= 0.0 {
+                fquotient as i32
+            } else {
+                // truncate towards -infinity
+                fquotient as i32 - 1
+            };
+
+            if qdigit != 0 {
+                // Do we need to normalize now?
+                max_div += qdigit.abs();
+                if max_div > (i32::max_value() - i32::max_value() / NBASE - 1) / (NBASE - 1) {
+                    // Yes, do it
+                    let mut carry = 0;
+                    let mut new_dig;
+                    for i in (qi + 1..=div_ndigits as usize).rev() {
+                        new_dig = div[i] + carry;
+                        if new_dig < 0 {
+                            carry = -((-new_dig - 1) / NBASE) - 1;
+                            new_dig -= carry * NBASE;
+                        } else if new_dig >= NBASE {
+                            carry = new_dig / NBASE;
+                            new_dig -= carry * NBASE;
+                        } else {
+                            carry = 0;
+                        }
+                        div[i] = new_dig;
+                    }
+                    new_dig = div[qi] + carry;
+                    div[qi] = new_dig;
+
+                    // All the div[] digits except possibly div[qi] are now in the
+                    // range 0..NBASE-1.  We do not need to consider div[qi] in
+                    // the max_div value anymore, so we can reset max_div to 1.
+                    max_div = 1;
+
+                    // Recompute the quotient digit since new info may have
+                    // propagated into the top four dividend digits
+                    fdividend = div[qi] as f64;
+                    for i in 1..4usize {
+                        fdividend *= NBASE as f64;
+                        if (qi + i) as i32 <= div_ndigits {
+                            fdividend += div[qi + i] as f64;
+                        }
+                    }
+                    // Compute the (approximate) quotient digit
+                    fquotient = fdividend * fdivisor_inverse;
+                    qdigit = if fquotient >= 0.0 {
+                        fquotient as i32
+                    } else {
+                        // truncate towards -infinity
+                        fquotient as i32 - 1
+                    };
+                    max_div += qdigit.abs();
+                }
+
+                // Subtract off the appropriate multiple of the divisor.
+                //
+                // The digits beyond div[qi] cannot overflow, because we know they
+                // will fall within the max_div limit.  As for div[qi] itself, note
+                // that qdigit is approximately trunc(div[qi] / vardigits[0]),
+                // which would make the new value simply div[qi] mod vardigits[0].
+                // The lower-order terms in qdigit can change this result by not
+                // more than about twice INT_MAX/NBASE, so overflow is impossible.
+                if qdigit != 0 {
+                    let istop = std::cmp::min(var2_ndigits, div_ndigits - qi as i32 + 1);
+                    for i in 0..istop as usize {
+                        div[qi + i] -= qdigit * var2_digits[i] as i32;
+                    }
+                }
+            }
+
+            // The dividend digit we are about to replace might still be nonzero.
+            // Fold it into the next digit position.
+            //
+            // There is no risk of overflow here, although proving that requires
+            // some care.  Much as with the argument for div[qi] not overflowing,
+            // if we consider the first two terms in the numerator and denominator
+            // of qdigit, we can see that the final value of div[qi + 1] will be
+            // approximately a remainder mod (vardigits[0]*NBASE + vardigits[1]).
+            // Accounting for the lower-order terms is a bit complicated but ends
+            // up adding not much more than INT_MAX/NBASE to the possible range.
+            // Thus, div[qi + 1] cannot overflow here, and in its role as div[qi]
+            // in the next loop iteration, it can't be large enough to cause
+            // overflow in the carry propagation step (if any), either.
+            //
+            // But having said that: div[qi] can be more than INT_MAX/NBASE, as
+            // noted above, which means that the product div[qi] * NBASE *can*
+            // overflow.  When that happens, adding it to div[qi + 1] will always
+            // cause a canceling overflow so that the end result is correct.  We
+            // could avoid the intermediate overflow by doing the multiplication
+            // and addition in int64 arithmetic, but so far there appears no need.
+            div[qi + 1] += div[qi] * NBASE;
+
+            div[qi] = qdigit;
+        }
+
+        // Approximate and store the last quotient digit (div[div_ndigits])
+        let mut fdividend = div[div_ndigits as usize] as f64;
+        for _ in 1..4usize {
+            fdividend *= NBASE as f64;
+        }
+        let fquotient = fdividend * fdivisor_inverse;
+        let qdigit = if fquotient >= 0.0 {
+            fquotient as i32
+        } else {
+            // truncate towards -infinity
+            fquotient as i32 - 1
+        };
+        div[div_ndigits as usize] = qdigit;
+
+        // Because the quotient digits might be off by one, some of them might be
+        // -1 or NBASE at this point.  The represented value is correct in a
+        // mathematical sense, but it doesn't look right.  We do a final carry
+        // propagation pass to normalize the digits, which we combine with storing
+        // the result digits into the output.  Note that this is still done at
+        // full precision w/guard digits.
+        let mut result = Self::nan();
+        result.alloc_buf(div_ndigits + 1);
+        let res_digits = result.digits_mut();
+
+        let mut carry = 0;
+        for i in (0..=div_ndigits as usize).rev() {
+            let mut new_dig = div[i] + carry;
+            if new_dig < 0 {
+                carry = -((-new_dig - 1) / NBASE) - 1;
+                new_dig -= carry * NBASE;
+            } else if new_dig >= NBASE {
+                carry = new_dig / NBASE;
+                new_dig -= carry * NBASE;
+            } else {
+                carry = 0;
+            }
+            res_digits[i] = new_dig as NumericDigit;
+        }
+        debug_assert_eq!(carry, 0);
+
+        // Finally, round the result to the requested precision.
+
+        result.weight = res_weight;
+        result.sign = res_sign;
+
+        // Round to target rscale (and set result->dscale)
+        if round {
+            result.round(rscale);
+        } else {
+            result.trunc(rscale);
+        }
+
+        // Strip leading and trailing zeroes
+        result.strip();
+
+        Some(result)
+    }
+
+    /// Checked numeric division.
+    /// Computes `self / other`, returning `None` if `other == 0`.
+    #[inline]
+    pub fn checked_div(&self, other: &Self) -> Option<Self> {
+        // Handle NaN
+        if self.is_nan() || other.is_nan() {
+            return Some(NumericVar::nan());
+        }
+
+        // Select scale for division result
+        let rscale = self.select_div_scale(other);
+        NumericVar::div(self, other, rscale, true)
+    }
 }
 
 impl fmt::Display for NumericVar {
@@ -1002,6 +1583,7 @@ impl fmt::Display for NumericVar {
 }
 
 /// Reads a `NumericDigit` from `&[u8]`.
+#[inline]
 fn read_numeric_digit(s: &[u8]) -> NumericDigit {
     debug_assert!(s.len() <= DEC_DIGITS);
 

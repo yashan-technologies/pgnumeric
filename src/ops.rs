@@ -3,18 +3,9 @@
 //! Implementing operators for numeric.
 
 use crate::NumericVar;
-use std::ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign};
+use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 
-// self + &other
-impl Add<&NumericVar> for NumericVar {
-    type Output = NumericVar;
-
-    #[inline]
-    fn add(self, other: &NumericVar) -> Self::Output {
-        NumericVar::add(&self, other)
-    }
-}
-
+// The main implementation
 // &self + &other
 impl Add<&NumericVar> for &NumericVar {
     type Output = NumericVar;
@@ -25,13 +16,23 @@ impl Add<&NumericVar> for &NumericVar {
     }
 }
 
+// self + &other
+impl Add<&NumericVar> for NumericVar {
+    type Output = NumericVar;
+
+    #[inline]
+    fn add(self, other: &NumericVar) -> Self::Output {
+        Add::add(&self, other)
+    }
+}
+
 // self + other
 impl Add<NumericVar> for NumericVar {
     type Output = NumericVar;
 
     #[inline]
     fn add(self, other: NumericVar) -> Self::Output {
-        NumericVar::add(&self, &other)
+        Add::add(&self, &other)
     }
 }
 
@@ -41,7 +42,7 @@ impl Add<NumericVar> for &NumericVar {
 
     #[inline]
     fn add(self, other: NumericVar) -> Self::Output {
-        NumericVar::add(self, &other)
+        Add::add(self, &other)
     }
 }
 
@@ -49,7 +50,7 @@ impl Add<NumericVar> for &NumericVar {
 impl AddAssign<&NumericVar> for NumericVar {
     #[inline]
     fn add_assign(&mut self, other: &NumericVar) {
-        let result = NumericVar::add(self, other);
+        let result = Add::add(self as &NumericVar, other);
         *self = result;
     }
 }
@@ -58,21 +59,12 @@ impl AddAssign<&NumericVar> for NumericVar {
 impl AddAssign<NumericVar> for NumericVar {
     #[inline]
     fn add_assign(&mut self, other: NumericVar) {
-        let result = NumericVar::add(self, &other);
+        let result = Add::add(self as &NumericVar, &other);
         *self = result;
     }
 }
 
-// self - &other
-impl Sub<&NumericVar> for NumericVar {
-    type Output = NumericVar;
-
-    #[inline]
-    fn sub(self, other: &NumericVar) -> Self::Output {
-        NumericVar::sub(&self, other)
-    }
-}
-
+// The main implementation
 // &self - &other
 impl Sub<&NumericVar> for &NumericVar {
     type Output = NumericVar;
@@ -83,13 +75,23 @@ impl Sub<&NumericVar> for &NumericVar {
     }
 }
 
+// self - &other
+impl Sub<&NumericVar> for NumericVar {
+    type Output = NumericVar;
+
+    #[inline]
+    fn sub(self, other: &NumericVar) -> Self::Output {
+        Sub::sub(&self, other)
+    }
+}
+
 // self - other
 impl Sub<NumericVar> for NumericVar {
     type Output = NumericVar;
 
     #[inline]
     fn sub(self, other: NumericVar) -> Self::Output {
-        NumericVar::sub(&self, &other)
+        Sub::sub(&self, &other)
     }
 }
 
@@ -99,7 +101,7 @@ impl Sub<NumericVar> for &NumericVar {
 
     #[inline]
     fn sub(self, other: NumericVar) -> Self::Output {
-        NumericVar::sub(self, &other)
+        Sub::sub(self, &other)
     }
 }
 
@@ -107,7 +109,7 @@ impl Sub<NumericVar> for &NumericVar {
 impl SubAssign<&NumericVar> for NumericVar {
     #[inline]
     fn sub_assign(&mut self, other: &NumericVar) {
-        let result = NumericVar::sub(self, other);
+        let result = Sub::sub(self as &NumericVar, other);
         *self = result;
     }
 }
@@ -116,27 +118,17 @@ impl SubAssign<&NumericVar> for NumericVar {
 impl SubAssign<NumericVar> for NumericVar {
     #[inline]
     fn sub_assign(&mut self, other: NumericVar) {
-        let result = NumericVar::sub(self, &other);
+        let result = Sub::sub(self as &NumericVar, &other);
         *self = result;
     }
 }
 
-// self * &other
-impl Mul<&NumericVar> for NumericVar {
-    type Output = NumericVar;
-
-    fn mul(self, other: &NumericVar) -> Self::Output {
-        // we request exact representation for the product,
-        // rscale = sum(dscale of self, dscale of other)
-        let rscale = self.dscale + other.dscale;
-        NumericVar::mul(&self, other, rscale)
-    }
-}
-
+// The main implementation
 // &self * &other
 impl Mul<&NumericVar> for &NumericVar {
     type Output = NumericVar;
 
+    #[inline]
     fn mul(self, other: &NumericVar) -> Self::Output {
         // we request exact representation for the product,
         // rscale = sum(dscale of self, dscale of other)
@@ -145,15 +137,23 @@ impl Mul<&NumericVar> for &NumericVar {
     }
 }
 
+// self * &other
+impl Mul<&NumericVar> for NumericVar {
+    type Output = NumericVar;
+
+    #[inline]
+    fn mul(self, other: &NumericVar) -> Self::Output {
+        Mul::mul(&self, other)
+    }
+}
+
 // self * other
 impl Mul<NumericVar> for NumericVar {
     type Output = NumericVar;
 
+    #[inline]
     fn mul(self, other: NumericVar) -> Self::Output {
-        // we request exact representation for the product,
-        // rscale = sum(dscale of self, dscale of other)
-        let rscale = self.dscale + other.dscale;
-        NumericVar::mul(&self, &other, rscale)
+        Mul::mul(&self, &other)
     }
 }
 
@@ -161,32 +161,85 @@ impl Mul<NumericVar> for NumericVar {
 impl Mul<NumericVar> for &NumericVar {
     type Output = NumericVar;
 
+    #[inline]
     fn mul(self, other: NumericVar) -> Self::Output {
-        // we request exact representation for the product,
-        // rscale = sum(dscale of self, dscale of other)
-        let rscale = self.dscale + other.dscale;
-        NumericVar::mul(self, &other, rscale)
+        Mul::mul(self, &other)
     }
 }
 
 // &mut self *= &other
 impl MulAssign<&NumericVar> for NumericVar {
+    #[inline]
     fn mul_assign(&mut self, other: &NumericVar) {
-        // we request exact representation for the product,
-        // rscale = sum(dscale of self, dscale of other)
-        let rscale = self.dscale + other.dscale;
-        let result = NumericVar::mul(self, other, rscale);
+        let result = Mul::mul(self as &NumericVar, other);
         *self = result;
     }
 }
 
 // &mut self *= other
 impl MulAssign<NumericVar> for NumericVar {
+    #[inline]
     fn mul_assign(&mut self, other: NumericVar) {
-        // we request exact representation for the product,
-        // rscale = sum(dscale of self, dscale of other)
-        let rscale = self.dscale + other.dscale;
-        let result = NumericVar::mul(self, &other, rscale);
+        let result = Mul::mul(self as &NumericVar, &other);
+        *self = result;
+    }
+}
+
+// The main implementation
+// &self / &other
+impl Div<&NumericVar> for &NumericVar {
+    type Output = NumericVar;
+
+    #[inline]
+    fn div(self, other: &NumericVar) -> Self::Output {
+        self.checked_div(other).expect("attempt to divide by zero")
+    }
+}
+
+// &self / other
+impl Div<NumericVar> for &NumericVar {
+    type Output = NumericVar;
+
+    #[inline]
+    fn div(self, other: NumericVar) -> Self::Output {
+        Div::div(self, &other)
+    }
+}
+
+// self / &other
+impl Div<&NumericVar> for NumericVar {
+    type Output = NumericVar;
+
+    #[inline]
+    fn div(self, other: &NumericVar) -> Self::Output {
+        Div::div(&self, other)
+    }
+}
+
+// self / other
+impl Div<NumericVar> for NumericVar {
+    type Output = NumericVar;
+
+    #[inline]
+    fn div(self, other: NumericVar) -> Self::Output {
+        Div::div(&self, &other)
+    }
+}
+
+// &mut self /= &other
+impl DivAssign<&NumericVar> for NumericVar {
+    #[inline]
+    fn div_assign(&mut self, other: &NumericVar) {
+        let result = Div::div(self as &NumericVar, other);
+        *self = result;
+    }
+}
+
+// &mut self /= other
+impl DivAssign<NumericVar> for NumericVar {
+    #[inline]
+    fn div_assign(&mut self, other: NumericVar) {
+        let result = Div::div(self as &NumericVar, &other);
         *self = result;
     }
 }
@@ -410,5 +463,110 @@ mod tests {
             "-987654321.123456789",
             "121932632103337905.662094193112635269",
         );
+    }
+
+    fn assert_div(val1: &str, val2: &str, expected: &str) {
+        let var1 = val1.parse::<NumericVar>().unwrap();
+        let var2 = val2.parse::<NumericVar>().unwrap();
+
+        let result1 = &var1 / &var2;
+        assert_eq!(result1.to_string(), expected);
+
+        let mut result2 = var1.clone();
+        result2 /= &var2;
+        assert_eq!(result2.to_string(), expected);
+    }
+
+    #[test]
+    fn div() {
+        assert_div("NaN", "10000.00001", "NaN");
+        assert_div("NaN", "00000.00000", "NaN");
+        assert_div("NaN", "-10000.00001", "NaN");
+        assert_div("10000.00001", "NaN", "NaN");
+        assert_div("00000.00000", "NaN", "NaN");
+        assert_div("-10000.00001", "NaN", "NaN");
+        assert_div("NaN", "NaN", "NaN");
+        assert_div(
+            "0.000000001",
+            "100000000",
+            "0.000000000000000010000000000000000000",
+        );
+        assert_div("100000000", "0.000000001", "100000000000000000.000000000");
+        assert_div(
+            "123456789.987654321",
+            "123456789.987654321",
+            "1.00000000000000000000",
+        );
+        assert_div(
+            "987654321.123456789",
+            "987654321.123456789",
+            "1.00000000000000000000",
+        );
+        assert_div(
+            "123456789.987654321",
+            "987654321.123456789",
+            "0.12499999984531250018",
+        );
+        assert_div(
+            "987654321.123456789",
+            "123456789.987654321",
+            "8.0000000099000000",
+        );
+        assert_div(
+            "00000.00000",
+            "123456789.987654321",
+            "0.0000000000000000000000000000",
+        );
+        assert_div(
+            "123456789.987654321",
+            "-987654321.123456789",
+            "-0.12499999984531250018",
+        );
+        assert_div(
+            "-987654321.123456789",
+            "123456789.987654321",
+            "-8.0000000099000000",
+        );
+        assert_div(
+            "00000.00000",
+            "987654321.123456789",
+            "0.0000000000000000000000000000",
+        );
+        assert_div(
+            "00000.00000",
+            "-987654321.123456789",
+            "0.0000000000000000000000000000",
+        );
+        assert_div(
+            "-123456789.987654321",
+            "987654321.123456789",
+            "-0.12499999984531250018",
+        );
+        assert_div(
+            "987654321.123456789",
+            "-123456789.987654321",
+            "-8.0000000099000000",
+        );
+        assert_div(
+            "00000.00000",
+            "-123456789.987654321",
+            "0.0000000000000000000000000000",
+        );
+        assert_div(
+            "-123456789.987654321",
+            "-987654321.123456789",
+            "0.12499999984531250018",
+        );
+        assert_div(
+            "-987654321.123456789",
+            "-123456789.987654321",
+            "8.0000000099000000",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to divide by zero")]
+    fn div_by_zero() {
+        assert_div("1", "0", "");
     }
 }
