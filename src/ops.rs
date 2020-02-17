@@ -3,6 +3,7 @@
 //! Implementing operators for numeric.
 
 use crate::NumericVar;
+use std::cmp::Ordering;
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Rem, RemAssign, Sub, SubAssign};
 
 // The main implementation
@@ -316,6 +317,49 @@ impl RemAssign<NumericVar> for NumericVar {
     fn rem_assign(&mut self, other: NumericVar) {
         let result = Rem::rem(self as &NumericVar, &other);
         *self = result;
+    }
+}
+
+impl PartialEq<NumericVar> for NumericVar {
+    #[inline]
+    fn eq(&self, other: &NumericVar) -> bool {
+        Ord::cmp(self, other) == Ordering::Equal
+    }
+}
+
+impl Eq for NumericVar {}
+
+impl PartialOrd<NumericVar> for NumericVar {
+    #[inline]
+    fn partial_cmp(&self, other: &NumericVar) -> Option<Ordering> {
+        Some(Ord::cmp(self, other))
+    }
+}
+
+impl Ord for NumericVar {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        // We consider all NANs to be equal and larger than any non-NAN. This is
+        // somewhat arbitrary; the important thing is to have a consistent sort
+        // order.
+        if self.is_nan() {
+            if other.is_nan() {
+                Ordering::Equal // NAN == NAN
+            } else {
+                Ordering::Greater // NAN > non-NAN
+            }
+        } else if other.is_nan() {
+            Ordering::Less // non-NAN < NAN
+        } else {
+            let cmp = self.cmp(other);
+            if cmp > 0 {
+                Ordering::Greater
+            } else if cmp < 0 {
+                Ordering::Less
+            } else {
+                Ordering::Equal
+            }
+        }
     }
 }
 
@@ -712,5 +756,62 @@ mod tests {
     #[should_panic(expected = "attempt to divide by zero")]
     fn rem_div_by_zero() {
         assert_rem("1", "0", "");
+    }
+
+    macro_rules! assert_cmp {
+        ($left: expr, $cmp: tt, $right: expr) => {{
+            let left = $left.parse::<NumericVar>().unwrap();
+            let right = $right.parse::<NumericVar>().unwrap();
+            assert!(left $cmp right, "left = {}, right = {}", left, right);
+        }};
+    }
+
+    fn assert_ord(val1: &str, val2: &str, expected: &str) {
+        let var1 = val1.parse::<NumericVar>().unwrap();
+        let var2 = val2.parse::<NumericVar>().unwrap();
+
+        let result = std::cmp::max(var1, var2);
+        assert_eq!(result.to_string(), expected);
+    }
+
+    #[test]
+    fn cmp() {
+        assert_cmp!("NaN", ==, "NaN");
+        assert_cmp!("NaN", >, "1e1000000");
+        assert_cmp!("NaN", >, "00000.00000");
+        assert_cmp!("NaN", >, "-1e1000000");
+        assert_cmp!("1e1000000", <, "NaN");
+        assert_cmp!("00000.00000", <, "NaN");
+        assert_cmp!("-1e1000000", <, "NaN");
+        assert_cmp!("00000.00000", ==, "0");
+        assert_cmp!("0.000000001", <,"100000000");
+        assert_cmp!("100000000", >, "0.000000001");
+        assert_cmp!("123456789.987654321", ==, "123456789.987654321");
+        assert_cmp!("987654321.123456789", ==, "987654321.123456789");
+        assert_cmp!("123456789.987654321", <, "987654321.123456789");
+        assert_cmp!("987654321.123456789", >, "123456789.987654321");
+        assert_cmp!("00000.00000", <, "123456789.987654321");
+        assert_cmp!("123456789.987654321", >, "-987654321.123456789");
+        assert_cmp!("-987654321.123456789", <, "123456789.987654321");
+        assert_cmp!("00000.00000", <, "987654321.123456789");
+        assert_cmp!("00000.00000", >, "-987654321.123456789");
+        assert_cmp!("-123456789.987654321", <, "987654321.123456789");
+        assert_cmp!("987654321.123456789", >, "-123456789.987654321");
+        assert_cmp!("00000.00000", >, "-123456789.987654321");
+        assert_cmp!("-123456789.987654321", >, "-987654321.123456789");
+        assert_cmp!("-987654321.123456789", <, "-123456789.987654321");
+        assert_cmp!("1.0e-100000000", >=, "1.0e-100000001");
+        assert_cmp!("1.0e-100000001", <=, "1.0e-100000000");
+        assert_cmp!("1.0e-100000000", !=, "1.0e-100000001");
+        assert_cmp!("1.0e100000000", <=, "1.0e100000001");
+        assert_cmp!("1.0e100000001", >=, "1.0e100000000");
+        assert_cmp!("1.0e100000000", !=, "1.0e100000001");
+
+        assert_ord("NaN", "1e1000000", "NaN");
+        assert_ord(
+            "123456789.987654321",
+            "987654321.123456789",
+            "987654321.123456789",
+        );
     }
 }

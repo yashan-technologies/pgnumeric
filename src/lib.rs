@@ -1506,6 +1506,7 @@ impl NumericVar {
     }
 
     /// Calculate the modulo of two numerics at variable level.
+    #[inline]
     fn modulo(&self, other: &Self) -> Option<Self> {
         debug_assert!(!self.is_nan());
         debug_assert!(!other.is_nan());
@@ -1518,6 +1519,40 @@ impl NumericVar {
         result = self.sub(&result);
 
         Some(result)
+    }
+
+    /// Compare two values on variable level.
+    /// We assume zeroes have been truncated to no digits.
+    #[inline]
+    fn cmp(&self, other: &Self) -> i32 {
+        debug_assert!(!self.is_nan());
+        debug_assert!(!other.is_nan());
+
+        if self.ndigits == 0 {
+            if other.ndigits == 0 {
+                0
+            } else if other.is_negative() {
+                1
+            } else {
+                -1
+            }
+        } else if other.ndigits == 0 {
+            if self.is_positive() {
+                1
+            } else {
+                -1
+            }
+        } else if self.is_positive() {
+            if other.is_negative() {
+                1
+            } else {
+                self.cmp_abs(other)
+            }
+        } else if other.is_positive() {
+            -1
+        } else {
+            other.cmp_abs(self)
+        }
     }
 
     /// Checked numeric division.
