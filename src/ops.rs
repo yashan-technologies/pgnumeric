@@ -12,6 +12,10 @@ impl Add<&NumericVar> for &NumericVar {
 
     #[inline]
     fn add(self, other: &NumericVar) -> Self::Output {
+        if self.is_nan() || other.is_nan() {
+            return NumericVar::nan();
+        }
+
         NumericVar::add(self, other)
     }
 }
@@ -71,6 +75,10 @@ impl Sub<&NumericVar> for &NumericVar {
 
     #[inline]
     fn sub(self, other: &NumericVar) -> Self::Output {
+        if self.is_nan() || other.is_nan() {
+            return NumericVar::nan();
+        }
+
         NumericVar::sub(self, other)
     }
 }
@@ -130,6 +138,10 @@ impl Mul<&NumericVar> for &NumericVar {
 
     #[inline]
     fn mul(self, other: &NumericVar) -> Self::Output {
+        if self.is_nan() || other.is_nan() {
+            return NumericVar::nan();
+        }
+
         // we request exact representation for the product,
         // rscale = sum(dscale of self, dscale of other)
         let rscale = self.dscale + other.dscale;
@@ -251,6 +263,10 @@ impl Rem<&NumericVar> for &NumericVar {
 
     #[inline]
     fn rem(self, other: &NumericVar) -> Self::Output {
+        if self.is_nan() || other.is_nan() {
+            return NumericVar::nan();
+        }
+
         self.modulo(other).expect("attempt to divide by zero")
     }
 }

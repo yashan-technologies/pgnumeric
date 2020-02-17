@@ -422,6 +422,9 @@ impl NumericVar {
 
     /// Add the absolute values of two variables into result.
     fn add_abs(&self, other: &Self) -> Self {
+        debug_assert!(!self.is_nan());
+        debug_assert!(!other.is_nan());
+
         // copy these values into local vars for speed in inner loop
         let var1_ndigits = self.ndigits;
         let var2_ndigits = other.ndigits;
@@ -491,6 +494,9 @@ impl NumericVar {
     ///
     /// NOTE: ABS(`self`) MUST BE GREATER OR EQUAL ABS(`other`) !!!
     fn sub_abs(&self, other: &Self) -> Self {
+        debug_assert!(!self.is_nan());
+        debug_assert!(!other.is_nan());
+
         // copy these values into local vars for speed in inner loop
         let var1_ndigits = self.ndigits;
         let var2_ndigits = other.ndigits;
@@ -561,6 +567,9 @@ impl NumericVar {
     /// * 0 for ABS(`self`) == ABS(`other`)
     /// * 1 for ABS(`self`) > ABS(`other`)
     fn cmp_abs(&self, other: &Self) -> i32 {
+        debug_assert!(!self.is_nan());
+        debug_assert!(!other.is_nan());
+
         let var1_ndigits = self.ndigits;
         let var1_digits = self.digits();
         let mut var1_weight = self.weight;
@@ -627,9 +636,8 @@ impl NumericVar {
 
     /// Full version of add functionality on variable level (handling signs).
     fn add(&self, other: &Self) -> Self {
-        if self.is_nan() || other.is_nan() {
-            return Self::nan();
-        }
+        debug_assert!(!self.is_nan());
+        debug_assert!(!other.is_nan());
 
         // Decide on the signs of the two variables what to do
         if self.is_positive() {
@@ -707,9 +715,8 @@ impl NumericVar {
 
     /// Full version of sub functionality on variable level (handling signs).
     fn sub(&self, other: &Self) -> Self {
-        if self.is_nan() || other.is_nan() {
-            return Self::nan();
-        }
+        debug_assert!(!self.is_nan());
+        debug_assert!(!other.is_nan());
 
         // Decide on the signs of the two variables what to do
         if self.is_positive() {
@@ -791,9 +798,8 @@ impl NumericVar {
     /// Product of self * other is returned.
     /// Result is rounded to no more than rscale fractional digits.
     fn mul(&self, other: &Self, rscale: i32) -> Self {
-        if self.is_nan() || other.is_nan() {
-            return Self::nan();
-        }
+        debug_assert!(!self.is_nan());
+        debug_assert!(!other.is_nan());
 
         // Arrange for var1 to be the shorter of the two numbers.  This improves
         // performance because the inner multiplication loop is much simpler than
@@ -1010,9 +1016,8 @@ impl NumericVar {
     ///
     /// Returns `None` if `other == 0`.
     fn div(&self, other: &Self, rscale: i32, round: bool) -> Option<Self> {
-        if self.is_nan() || other.is_nan() {
-            return Some(Self::nan());
-        }
+        debug_assert!(!self.is_nan());
+        debug_assert!(!other.is_nan());
 
         // copy these values into local vars for speed in inner loop
         let var1_ndigits = self.ndigits;
@@ -1502,9 +1507,8 @@ impl NumericVar {
 
     /// Calculate the modulo of two numerics at variable level.
     fn modulo(&self, other: &Self) -> Option<Self> {
-        if self.is_nan() || other.is_nan() {
-            return Some(Self::nan());
-        }
+        debug_assert!(!self.is_nan());
+        debug_assert!(!other.is_nan());
 
         // We do this using the equation
         // mod(x,y) = x - trunc(x/y)*y
