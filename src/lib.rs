@@ -1500,6 +1500,22 @@ impl NumericVar {
         Some(result)
     }
 
+    /// Calculate the modulo of two numerics at variable level.
+    fn modulo(&self, other: &Self) -> Option<Self> {
+        if self.is_nan() || other.is_nan() {
+            return Some(Self::nan());
+        }
+
+        // We do this using the equation
+        // mod(x,y) = x - trunc(x/y)*y
+        // div() can be persuaded to give us trunc(x/y) directly.
+        let mut result = self.div(other, 0, false)?;
+        result = result.mul(other, other.dscale);
+        result = self.sub(&result);
+
+        Some(result)
+    }
+
     /// Checked numeric division.
     /// Computes `self / other`, returning `None` if `other == 0`.
     #[inline]

@@ -3,7 +3,7 @@
 //! Implementing operators for numeric.
 
 use crate::NumericVar;
-use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
+use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Rem, RemAssign, Sub, SubAssign};
 
 // The main implementation
 // &self + &other
@@ -240,6 +240,65 @@ impl DivAssign<NumericVar> for NumericVar {
     #[inline]
     fn div_assign(&mut self, other: NumericVar) {
         let result = Div::div(self as &NumericVar, &other);
+        *self = result;
+    }
+}
+
+// The main implementation
+// &self % &other
+impl Rem<&NumericVar> for &NumericVar {
+    type Output = NumericVar;
+
+    #[inline]
+    fn rem(self, other: &NumericVar) -> Self::Output {
+        self.modulo(other).expect("attempt to divide by zero")
+    }
+}
+
+// &self % other
+impl Rem<NumericVar> for &NumericVar {
+    type Output = NumericVar;
+
+    #[inline]
+    fn rem(self, other: NumericVar) -> Self::Output {
+        Rem::rem(self, &other)
+    }
+}
+
+// self % &other
+impl Rem<&NumericVar> for NumericVar {
+    type Output = NumericVar;
+
+    #[inline]
+    fn rem(self, other: &NumericVar) -> Self::Output {
+        Rem::rem(&self, other)
+    }
+}
+
+// self % other
+impl Rem<NumericVar> for NumericVar {
+    type Output = NumericVar;
+
+    #[inline]
+    fn rem(self, other: NumericVar) -> Self::Output {
+        Rem::rem(&self, &other)
+    }
+}
+
+// &mut self %= &other
+impl RemAssign<&NumericVar> for NumericVar {
+    #[inline]
+    fn rem_assign(&mut self, other: &NumericVar) {
+        let result = Rem::rem(self as &NumericVar, other);
+        *self = result;
+    }
+}
+
+// &mut self %= other
+impl RemAssign<NumericVar> for NumericVar {
+    #[inline]
+    fn rem_assign(&mut self, other: NumericVar) {
+        let result = Rem::rem(self as &NumericVar, &other);
         *self = result;
     }
 }
@@ -568,5 +627,74 @@ mod tests {
     #[should_panic(expected = "attempt to divide by zero")]
     fn div_by_zero() {
         assert_div("1", "0", "");
+    }
+
+    fn assert_rem(val1: &str, val2: &str, expected: &str) {
+        let var1 = val1.parse::<NumericVar>().unwrap();
+        let var2 = val2.parse::<NumericVar>().unwrap();
+
+        let result1 = &var1 % &var2;
+        assert_eq!(result1.to_string(), expected);
+
+        let mut result2 = var1.clone();
+        result2 %= &var2;
+        assert_eq!(result2.to_string(), expected);
+    }
+
+    #[test]
+    fn rem() {
+        assert_rem("NaN", "10000.00001", "NaN");
+        assert_rem("NaN", "00000.00000", "NaN");
+        assert_rem("NaN", "-10000.00001", "NaN");
+        assert_rem("10000.00001", "NaN", "NaN");
+        assert_rem("00000.00000", "NaN", "NaN");
+        assert_rem("-10000.00001", "NaN", "NaN");
+        assert_rem("NaN", "NaN", "NaN");
+        assert_rem("0.000000001", "100000000", "0.000000001");
+        assert_rem("100000000", "0.000000001", "0.000000000");
+        assert_rem("123456789.987654321", "123456789.987654321", "0.000000000");
+        assert_rem("987654321.123456789", "987654321.123456789", "0.000000000");
+        assert_rem(
+            "123456789.987654321",
+            "987654321.123456789",
+            "123456789.987654321",
+        );
+        assert_rem("987654321.123456789", "123456789.987654321", "1.222222221");
+        assert_rem("00000.00000", "123456789.987654321", "0.000000000");
+        assert_rem(
+            "123456789.987654321",
+            "-987654321.123456789",
+            "123456789.987654321",
+        );
+        assert_rem(
+            "-987654321.123456789",
+            "123456789.987654321",
+            "-1.222222221",
+        );
+        assert_rem("00000.00000", "987654321.123456789", "0.000000000");
+        assert_rem("00000.00000", "-987654321.123456789", "0.000000000");
+        assert_rem(
+            "-123456789.987654321",
+            "987654321.123456789",
+            "-123456789.987654321",
+        );
+        assert_rem("987654321.123456789", "-123456789.987654321", "1.222222221");
+        assert_rem("00000.00000", "-123456789.987654321", "0.000000000");
+        assert_rem(
+            "-123456789.987654321",
+            "-987654321.123456789",
+            "-123456789.987654321",
+        );
+        assert_rem(
+            "-987654321.123456789",
+            "-123456789.987654321",
+            "-1.222222221",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to divide by zero")]
+    fn rem_div_by_zero() {
+        assert_rem("1", "0", "");
     }
 }
