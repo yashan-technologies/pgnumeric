@@ -254,7 +254,6 @@ impl NumericVar {
     /// after the decimal point.
     ///
     /// NOTE: we allow rscale < 0 here, implying truncation before the decimal point.
-    #[allow(dead_code)]
     fn trunc(&mut self, rscale: i32) {
         // decimal digits wanted
         let di = (self.weight + 1) * DEC_DIGITS as i32 + rscale;
@@ -1552,6 +1551,18 @@ impl NumericVar {
             -1
         } else {
             other.cmp_abs(self)
+        }
+    }
+
+    /// Negate this value.
+    #[inline]
+    pub fn negate(&mut self) {
+        if self.ndigits > 0 {
+            if self.is_positive() {
+                self.sign = NUMERIC_NEG;
+            } else if self.is_negative() {
+                self.sign = NUMERIC_POS;
+            }
         }
     }
 

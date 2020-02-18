@@ -4,7 +4,9 @@
 
 use crate::NumericVar;
 use std::cmp::Ordering;
-use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Rem, RemAssign, Sub, SubAssign};
+use std::ops::{
+    Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Rem, RemAssign, Sub, SubAssign,
+};
 
 // The main implementation
 // &self + &other
@@ -317,6 +319,28 @@ impl RemAssign<NumericVar> for NumericVar {
     fn rem_assign(&mut self, other: NumericVar) {
         let result = Rem::rem(self as &NumericVar, &other);
         *self = result;
+    }
+}
+
+// -self
+impl Neg for NumericVar {
+    type Output = NumericVar;
+
+    #[inline]
+    fn neg(mut self) -> Self::Output {
+        self.negate();
+        self
+    }
+}
+
+// -&self
+impl Neg for &NumericVar {
+    type Output = NumericVar;
+
+    #[inline]
+    fn neg(self) -> Self::Output {
+        let n = self.clone();
+        Neg::neg(n)
     }
 }
 
@@ -813,5 +837,21 @@ mod tests {
             "987654321.123456789",
             "987654321.123456789",
         );
+    }
+
+    fn assert_neg(val: &str, expected: &str) {
+        let var = val.parse::<NumericVar>().unwrap();
+        let expected_var = expected.parse::<NumericVar>().unwrap();
+        assert_eq!(-var, expected_var);
+    }
+
+    #[test]
+    fn neg() {
+        assert_neg("NaN", "NaN");
+        assert_neg("00000.00000", "0.00000");
+        assert_neg("1.0", "-1.0");
+        assert_neg("-1.0", "1.0");
+        assert_neg("1.23e10", "-1.23e10");
+        assert_neg("-1.23e10", "1.23e10");
     }
 }
