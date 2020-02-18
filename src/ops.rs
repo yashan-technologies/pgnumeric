@@ -19,7 +19,7 @@ impl Add<&NumericVar> for &NumericVar {
             return NumericVar::nan();
         }
 
-        NumericVar::add(self, other)
+        self.add_common(other)
     }
 }
 
@@ -82,7 +82,7 @@ impl Sub<&NumericVar> for &NumericVar {
             return NumericVar::nan();
         }
 
-        NumericVar::sub(self, other)
+        self.sub_common(other)
     }
 }
 
@@ -148,7 +148,7 @@ impl Mul<&NumericVar> for &NumericVar {
         // we request exact representation for the product,
         // rscale = sum(dscale of self, dscale of other)
         let rscale = self.dscale + other.dscale;
-        NumericVar::mul(self, other, rscale)
+        self.mul_common(other, rscale)
     }
 }
 
@@ -270,7 +270,7 @@ impl Rem<&NumericVar> for &NumericVar {
             return NumericVar::nan();
         }
 
-        self.modulo(other).expect("attempt to divide by zero")
+        self.mod_common(other).expect("attempt to divide by zero")
     }
 }
 
@@ -375,7 +375,7 @@ impl Ord for NumericVar {
         } else if other.is_nan() {
             Ordering::Less // non-NAN < NAN
         } else {
-            let cmp = self.cmp(other);
+            let cmp = self.cmp_common(other);
             if cmp > 0 {
                 Ordering::Greater
             } else if cmp < 0 {

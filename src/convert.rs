@@ -417,7 +417,7 @@ fn into_signed<T: Signed>(var: &mut NumericVar) -> Result<T, NumericTryFromError
     }
 
     // Round to nearest integer
-    var.round(0);
+    var.round_common(0);
 
     // Check for zero input
     var.strip();
@@ -477,7 +477,7 @@ fn into_unsigned<T: Unsigned>(var: &mut NumericVar) -> Result<T, NumericTryFromE
     }
 
     // Round to nearest integer
-    var.round(0);
+    var.round_common(0);
 
     // Check for zero input
     var.strip();

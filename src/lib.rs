@@ -12,6 +12,7 @@ pub use crate::error::NumericParseError;
 pub use crate::error::NumericTryFromError;
 
 use crate::parse::{parse_decimal, Decimal};
+use lazy_static::lazy_static;
 use std::fmt;
 
 /// Limit on the precision (and hence scale) specifiable in a NUMERIC typmod.
@@ -44,7 +45,13 @@ const NUMERIC_NAN: i32 = 0xC000;
 
 type NumericDigit = i16;
 
-static ROUND_POWERS: [NumericDigit; 4] = [0, 1000, 100, 10];
+const ROUND_POWERS: [NumericDigit; 4] = [0, 1000, 100, 10];
+
+lazy_static! {
+    // 0.5
+    static ref ZERO_POINT_FIVE: NumericVar = ".5".parse().unwrap();
+    static ref ONE: NumericVar = "1".parse().unwrap();
+}
 
 /// `NumericVar` is the format we use for arithmetic.
 /// The value represented by a NumericVar is determined by the `sign`, `weight`,
@@ -171,7 +178,9 @@ impl NumericVar {
     /// after the decimal point.
     ///
     /// NOTE: we allow rscale < 0 here, implying rounding before the decimal point.
-    fn round(&mut self, rscale: i32) {
+    fn round_common(&mut self, rscale: i32) {
+        debug_assert!(!self.is_nan());
+
         // Carry may need one additional digit
         debug_assert!(self.offset > 0 || self.ndigits == 0);
 
@@ -254,7 +263,9 @@ impl NumericVar {
     /// after the decimal point.
     ///
     /// NOTE: we allow rscale < 0 here, implying truncation before the decimal point.
-    fn trunc(&mut self, rscale: i32) {
+    fn trunc_common(&mut self, rscale: i32) {
+        debug_assert!(!self.is_nan());
+
         // decimal digits wanted
         let di = (self.weight + 1) * DEC_DIGITS as i32 + rscale;
 
@@ -286,6 +297,36 @@ impl NumericVar {
 
         self.dscale = rscale;
         self.buf.truncate(self.offset + self.ndigits as usize);
+    }
+
+    /// Return the smallest integer greater than or equal to the argument
+    /// on variable level
+    fn ceil_common(&self) -> Self {
+        debug_assert!(!self.is_nan());
+
+        let mut result = self.clone();
+        result.trunc_common(0);
+
+        if self.is_positive() && self.cmp_common(&result) != 0 {
+            result = result.add_common(&ONE);
+        }
+
+        result
+    }
+
+    /// Return the largest integer equal to or less than the argument
+    /// on variable level
+    fn floor_common(&self) -> Self {
+        debug_assert!(!self.is_nan());
+
+        let mut result = self.clone();
+        result.trunc_common(0);
+
+        if self.is_negative() && self.cmp_common(&result) != 0 {
+            result = result.sub_common(&ONE);
+        }
+
+        result
     }
 
     /// Strips the leading and trailing zeroes, and normalize zero.
@@ -634,7 +675,7 @@ impl NumericVar {
     }
 
     /// Full version of add functionality on variable level (handling signs).
-    fn add(&self, other: &Self) -> Self {
+    fn add_common(&self, other: &Self) -> Self {
         debug_assert!(!self.is_nan());
         debug_assert!(!other.is_nan());
 
@@ -713,7 +754,7 @@ impl NumericVar {
     }
 
     /// Full version of sub functionality on variable level (handling signs).
-    fn sub(&self, other: &Self) -> Self {
+    fn sub_common(&self, other: &Self) -> Self {
         debug_assert!(!self.is_nan());
         debug_assert!(!other.is_nan());
 
@@ -796,7 +837,7 @@ impl NumericVar {
     /// Multiplication on variable level.
     /// Product of self * other is returned.
     /// Result is rounded to no more than rscale fractional digits.
-    fn mul(&self, other: &Self, rscale: i32) -> Self {
+    fn mul_common(&self, other: &Self, rscale: i32) -> Self {
         debug_assert!(!self.is_nan());
         debug_assert!(!other.is_nan());
 
@@ -946,7 +987,7 @@ impl NumericVar {
         result.sign = res_sign;
 
         // Round to target rscale (and set result->dscale)
-        result.round(rscale);
+        result.round_common(rscale);
 
         // Strip leading and trailing zeroes
         result.strip();
@@ -1014,7 +1055,7 @@ impl NumericVar {
     /// is truncated (towards zero) at that digit.
     ///
     /// Returns `None` if `other == 0`.
-    fn div(&self, other: &Self, rscale: i32, round: bool) -> Option<Self> {
+    fn div_common(&self, other: &Self, rscale: i32, round: bool) -> Option<Self> {
         debug_assert!(!self.is_nan());
         debug_assert!(!other.is_nan());
 
@@ -1219,9 +1260,9 @@ impl NumericVar {
 
         // Round or truncate to target rscale (and set result->dscale)
         if round {
-            result.round(rscale);
+            result.round_common(rscale);
         } else {
-            result.trunc(rscale);
+            result.trunc_common(rscale);
         }
 
         // Strip leading and trailing zeroes
@@ -1246,11 +1287,9 @@ impl NumericVar {
     /// the correct answer is 1.
     ///
     /// Returns `None` if `other == 0`.
-    #[allow(dead_code)]
-    fn div_fast(&self, other: &Self, rscale: i32, round: bool) -> Option<Self> {
-        if self.is_nan() || other.is_nan() {
-            return Some(Self::nan());
-        }
+    fn div_fast_common(&self, other: &Self, rscale: i32, round: bool) -> Option<Self> {
+        debug_assert!(!self.is_nan());
+        debug_assert!(!other.is_nan());
 
         // copy these values into local vars for speed in inner loop
         let var1_ndigits = self.ndigits;
@@ -1493,9 +1532,9 @@ impl NumericVar {
 
         // Round to target rscale (and set result->dscale)
         if round {
-            result.round(rscale);
+            result.round_common(rscale);
         } else {
-            result.trunc(rscale);
+            result.trunc_common(rscale);
         }
 
         // Strip leading and trailing zeroes
@@ -1506,16 +1545,16 @@ impl NumericVar {
 
     /// Calculate the modulo of two numerics at variable level.
     #[inline]
-    fn modulo(&self, other: &Self) -> Option<Self> {
+    fn mod_common(&self, other: &Self) -> Option<Self> {
         debug_assert!(!self.is_nan());
         debug_assert!(!other.is_nan());
 
         // We do this using the equation
         // mod(x,y) = x - trunc(x/y)*y
         // div() can be persuaded to give us trunc(x/y) directly.
-        let mut result = self.div(other, 0, false)?;
-        result = result.mul(other, other.dscale);
-        result = self.sub(&result);
+        let mut result = self.div_common(other, 0, false)?;
+        result = result.mul_common(other, other.dscale);
+        result = self.sub_common(&result);
 
         Some(result)
     }
@@ -1523,7 +1562,7 @@ impl NumericVar {
     /// Compare two values on variable level.
     /// We assume zeroes have been truncated to no digits.
     #[inline]
-    fn cmp(&self, other: &Self) -> i32 {
+    fn cmp_common(&self, other: &Self) -> i32 {
         debug_assert!(!self.is_nan());
         debug_assert!(!other.is_nan());
 
@@ -1554,6 +1593,53 @@ impl NumericVar {
         }
     }
 
+    /// Compute the square root of x using Newton's algorithm.
+    fn sqrt_common(&self, rscale: i32) -> Self {
+        debug_assert!(self.is_positive());
+
+        let local_rscale = rscale + 8;
+
+        if self.ndigits == 0 {
+            let mut result = Self::zero();
+            result.dscale = rscale;
+            return result;
+        }
+
+        // Initialize the result to the first guess
+        let mut result = Self::zero();
+        result.alloc_buf(1);
+        result.digits_mut()[0] = {
+            let i = self.digits()[0] / 2;
+            if i == 0 {
+                1
+            } else {
+                i
+            }
+        };
+        result.weight = self.weight / 2;
+
+        let mut last_val = result.clone();
+
+        loop {
+            let val = self
+                .div_fast_common(&result, local_rscale, true)
+                .expect("should not be zero");
+            result = result.add_common(&val);
+            result = result.mul_common(&ZERO_POINT_FIVE, local_rscale);
+
+            if result.cmp_common(&last_val) == 0 {
+                break;
+            }
+
+            last_val = result.clone();
+        }
+
+        // Round to requested precision
+        result.round_common(rscale);
+
+        result
+    }
+
     /// Negate this value.
     #[inline]
     pub fn negate(&mut self) {
@@ -1577,7 +1663,111 @@ impl NumericVar {
 
         // Select scale for division result
         let rscale = self.select_div_scale(other);
-        NumericVar::div(self, other, rscale, true)
+        NumericVar::div_common(self, other, rscale, true)
+    }
+
+    /// Round a value to have `scale` digits after the decimal point.
+    /// We allow negative `scale`, implying rounding before the decimal
+    /// point --- Oracle interprets rounding that way.
+    #[inline]
+    pub fn round(&mut self, scale: i32) {
+        if self.is_nan() {
+            return;
+        }
+
+        // Limit the scale value to avoid possible overflow in calculations
+        let rscale = scale
+            .max(-NUMERIC_MAX_DISPLAY_SCALE)
+            .min(NUMERIC_MAX_DISPLAY_SCALE);
+
+        self.round_common(rscale);
+
+        // We don't allow negative output dscale
+        if rscale < 0 {
+            self.dscale = 0;
+        }
+    }
+
+    /// Truncate a value to have `scale` digits after the decimal point.
+    /// We allow negative `scale`, implying a truncation before the decimal
+    /// point --- Oracle interprets truncation that way.
+    #[inline]
+    pub fn trunc(&mut self, scale: i32) {
+        if self.is_nan() {
+            return;
+        }
+
+        // Limit the scale value to avoid possible overflow in calculations
+        let rscale = scale
+            .max(-NUMERIC_MAX_DISPLAY_SCALE)
+            .min(NUMERIC_MAX_DISPLAY_SCALE);
+
+        self.trunc_common(rscale);
+
+        // We don't allow negative output dscale
+        if rscale < 0 {
+            self.dscale = 0;
+        }
+    }
+
+    /// Return the smallest integer greater than or equal to the argument.
+    #[inline]
+    pub fn ceil(&self) -> Self {
+        if self.is_nan() {
+            return Self::nan();
+        }
+
+        self.ceil_common()
+    }
+
+    /// Return the largest integer equal to or less than the argument.
+    #[inline]
+    pub fn floor(&self) -> Self {
+        if self.is_nan() {
+            return Self::nan();
+        }
+
+        self.floor_common()
+    }
+
+    /// Compute the absolute value of `self`.
+    #[inline]
+    pub fn abs(&mut self) {
+        if self.is_nan() {
+            return;
+        }
+
+        self.sign = NUMERIC_POS;
+    }
+
+    /// Compute the square root of a numeric.
+    ///
+    /// # Panics
+    /// Panics if `self` is negative.
+    pub fn sqrt(&self) -> Self {
+        assert!(
+            !self.is_negative(),
+            "cannot take square root of a negative number"
+        );
+
+        if self.is_nan() {
+            return Self::nan();
+        }
+
+        // Determine the result scale.
+        // We choose a scale to give at least NUMERIC_MIN_SIG_DIGITS significant digits;
+        // but in any case not less than the input's dscale.
+
+        // Assume the input was normalized, so arg.weight is accurate
+        let sweight = (self.weight + 1) * DEC_DIGITS as i32 / 2 - 1;
+
+        let rscale = (NUMERIC_MIN_SIG_DIGITS - sweight)
+            .max(self.dscale)
+            .max(NUMERIC_MIN_DISPLAY_SCALE)
+            .min(NUMERIC_MAX_DISPLAY_SCALE);
+
+        let result = self.sqrt_common(rscale);
+        result
     }
 }
 
@@ -1665,63 +1855,145 @@ fn read_numeric_digit(s: &[u8]) -> NumericDigit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::convert::TryInto;
 
-    fn assert_round_floating<V: TryInto<NumericVar, Error = NumericTryFromError>, E: AsRef<str>>(
-        val: V,
-        rscale: i32,
-        expected: E,
-    ) {
-        let mut numeric = val.try_into().unwrap();
+    fn assert_round(val: &str, rscale: i32, expected: &str) {
+        let mut numeric = val.parse::<NumericVar>().unwrap();
         numeric.round(rscale);
-        assert_eq!(numeric.to_string(), expected.as_ref());
+        assert_eq!(numeric.to_string(), expected);
     }
 
     #[test]
     fn round() {
-        assert_round_floating(123456.123456f64, 6, "123456.123456");
-        assert_round_floating(123456.123456f64, 5, "123456.12346");
-        assert_round_floating(123456.123456f64, 4, "123456.1235");
-        assert_round_floating(123456.123456f64, 3, "123456.123");
-        assert_round_floating(123456.123456f64, 2, "123456.12");
-        assert_round_floating(123456.123456f64, 1, "123456.1");
-        assert_round_floating(123456.123456f64, 0, "123456");
-        assert_round_floating(123456.123456f64, -1, "123460");
-        assert_round_floating(123456.123456f64, -2, "123500");
-        assert_round_floating(123456.123456f64, -3, "123000");
-        assert_round_floating(123456.123456f64, -4, "120000");
-        assert_round_floating(123456.123456f64, -5, "100000");
-        assert_round_floating(9999.9f64, 1, "9999.9");
-        assert_round_floating(9999.9f64, -2, "10000");
-        assert_round_floating(9999.9f64, -4, "10000");
+        assert_round("NaN", 0, "NaN");
+        assert_round("123456", 0, "123456");
+        assert_round("123456.123456", 6, "123456.123456");
+        assert_round("123456.123456", 5, "123456.12346");
+        assert_round("123456.123456", 4, "123456.1235");
+        assert_round("123456.123456", 3, "123456.123");
+        assert_round("123456.123456", 2, "123456.12");
+        assert_round("123456.123456", 1, "123456.1");
+        assert_round("123456.123456", 0, "123456");
+        assert_round("123456.123456", -1, "123460");
+        assert_round("123456.123456", -2, "123500");
+        assert_round("123456.123456", -3, "123000");
+        assert_round("123456.123456", -4, "120000");
+        assert_round("123456.123456", -5, "100000");
+        assert_round("9999.9", 1, "9999.9");
+        assert_round("9999.9", -2, "10000");
+        assert_round("9999.9", -4, "10000");
     }
 
-    fn assert_trunc_floating<V: TryInto<NumericVar, Error = NumericTryFromError>, E: AsRef<str>>(
-        val: V,
-        rscale: i32,
-        expected: E,
-    ) {
-        let mut numeric = val.try_into().unwrap();
+    fn assert_trunc(val: &str, rscale: i32, expected: &str) {
+        let mut numeric = val.parse::<NumericVar>().unwrap();
         numeric.trunc(rscale);
-        assert_eq!(numeric.to_string(), expected.as_ref());
+        assert_eq!(numeric.to_string(), expected);
     }
 
     #[test]
     fn trunc() {
-        assert_trunc_floating(123456.123456f64, 6, "123456.123456");
-        assert_trunc_floating(123456.123456f64, 5, "123456.12345");
-        assert_trunc_floating(123456.123456f64, 4, "123456.1234");
-        assert_trunc_floating(123456.123456f64, 3, "123456.123");
-        assert_trunc_floating(123456.123456f64, 2, "123456.12");
-        assert_trunc_floating(123456.123456f64, 1, "123456.1");
-        assert_trunc_floating(123456.123456f64, 0, "123456");
-        assert_trunc_floating(123456.123456f64, -1, "123450");
-        assert_trunc_floating(123456.123456f64, -2, "123400");
-        assert_trunc_floating(123456.123456f64, -3, "123000");
-        assert_trunc_floating(123456.123456f64, -4, "120000");
-        assert_trunc_floating(123456.123456f64, -5, "100000");
-        assert_trunc_floating(9999.9f64, 1, "9999.9");
-        assert_trunc_floating(9999.9f64, -2, "9900");
-        assert_trunc_floating(9999.9f64, -4, "0");
+        assert_trunc("NaN", 0, "NaN");
+        assert_trunc("123456", 0, "123456");
+        assert_trunc("123456.123456", 6, "123456.123456");
+        assert_trunc("123456.123456", 5, "123456.12345");
+        assert_trunc("123456.123456", 4, "123456.1234");
+        assert_trunc("123456.123456", 3, "123456.123");
+        assert_trunc("123456.123456", 2, "123456.12");
+        assert_trunc("123456.123456", 1, "123456.1");
+        assert_trunc("123456.123456", 0, "123456");
+        assert_trunc("123456.123456", -1, "123450");
+        assert_trunc("123456.123456", -2, "123400");
+        assert_trunc("123456.123456", -3, "123000");
+        assert_trunc("123456.123456", -4, "120000");
+        assert_trunc("123456.123456", -5, "100000");
+        assert_trunc("9999.9", 1, "9999.9");
+        assert_trunc("9999.9", -2, "9900");
+        assert_trunc("9999.9", -4, "0");
+    }
+
+    fn assert_sqrt(val: &str, expected: &str) {
+        let var = val.parse::<NumericVar>().unwrap();
+        let result = var.sqrt();
+        assert_eq!(result.to_string(), expected);
+    }
+
+    #[test]
+    fn sqrt() {
+        assert_sqrt("NaN", "NaN");
+        assert_sqrt("0", "0.000000000000000");
+        assert_sqrt("0.00000", "0.000000000000000");
+        assert_sqrt("1", "1.000000000000000");
+        assert_sqrt("1.00000", "1.000000000000000");
+        assert_sqrt("1.44", "1.200000000000000");
+        assert_sqrt("2", "1.414213562373095");
+        assert_sqrt("100", "10.000000000000000");
+        assert_sqrt(
+            "170141183460469231731687303715884105727",
+            "13043817825332782212",
+        );
+        assert_sqrt(
+            "0.170141183460469231731687303715884105727",
+            "0.412481737123559485879032211752436138996",
+        );
+        assert_sqrt(
+            "1e100",
+            "100000000000000000000000000000000000000000000000000",
+        );
+        assert_sqrt(
+            "1.01e100",
+            "100498756211208902702192649127595761869450234700264",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot take square root of a negative number")]
+    fn sqrt_negative() {
+        let var = "-1".parse::<NumericVar>().unwrap();
+        let _ = var.sqrt();
+    }
+
+    fn assert_ceil(val: &str, expected: &str) {
+        let var = val.parse::<NumericVar>().unwrap();
+        let result = var.ceil();
+        assert_eq!(result.to_string(), expected);
+    }
+
+    #[test]
+    fn ceil() {
+        assert_ceil("NaN", "NaN");
+        assert_ceil("00000.00000", "0");
+        assert_ceil("10000", "10000");
+        assert_ceil("-10000", "-10000");
+        assert_ceil("123456.123456", "123457");
+        assert_ceil("-123456.123456", "-123456");
+    }
+
+    fn assert_floor(val: &str, expected: &str) {
+        let var = val.parse::<NumericVar>().unwrap();
+        let result = var.floor();
+        assert_eq!(result.to_string(), expected);
+    }
+
+    #[test]
+    fn floor() {
+        assert_floor("NaN", "NaN");
+        assert_floor("00000.00000", "0");
+        assert_floor("10000", "10000");
+        assert_floor("-10000", "-10000");
+        assert_floor("123456.123456", "123456");
+        assert_floor("-123456.123456", "-123457");
+    }
+
+    fn assert_abs(val: &str, expected: &str) {
+        let mut var = val.parse::<NumericVar>().unwrap();
+        var.abs();
+        assert_eq!(var.to_string(), expected);
+    }
+
+    #[test]
+    fn abs() {
+        assert_abs("NaN", "NaN");
+        assert_abs("0.0", "0.0");
+        assert_abs("123456.123456", "123456.123456");
+        assert_abs("-123456.123456", "123456.123456");
     }
 }
