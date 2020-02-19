@@ -50,7 +50,10 @@ const ROUND_POWERS: [NumericDigit; 4] = [0, 1000, 100, 10];
 lazy_static! {
     // 0.5
     static ref ZERO_POINT_FIVE: NumericVar = ".5".parse().unwrap();
+    // 1
     static ref ONE: NumericVar = "1".parse().unwrap();
+    // 10
+    static ref TEN: NumericVar = "10".parse().unwrap();
 }
 
 /// `NumericVar` is the format we use for arithmetic.
@@ -109,11 +112,16 @@ impl NumericVar {
 
     /// Creates a zero numeric.
     pub const fn zero() -> Self {
+        Self::scaled_zero(0)
+    }
+
+    /// Creates a zero numeric with given scale.
+    pub const fn scaled_zero(scale: i32) -> Self {
         Self {
             ndigits: 0,
             weight: 0,
             sign: NUMERIC_POS,
-            dscale: 0,
+            dscale: scale,
             buf: Vec::new(),
             offset: 0,
         }
@@ -135,6 +143,18 @@ impl NumericVar {
     #[inline]
     pub const fn is_negative(&self) -> bool {
         self.sign == NUMERIC_NEG
+    }
+
+    /// Returns the scale, i.e. the count of decimal digits in the fractional part.
+    ///
+    /// Returns `None` if `self` is `NaN`.
+    #[inline]
+    pub fn scale(&self) -> Option<i32> {
+        if self.is_nan() {
+            None
+        } else {
+            Some(self.dscale)
+        }
     }
 
     /// Returns immutable digits buffer.
@@ -165,7 +185,6 @@ impl NumericVar {
     /// Sets `self` to ZERO.
     ///
     /// Note: its dscale is not touched.
-    #[allow(dead_code)]
     fn zeroed(&mut self) {
         self.ndigits = 0;
         self.weight = 0;
@@ -460,6 +479,212 @@ impl NumericVar {
         Ok(s)
     }
 
+    /// Convert `self` to text representation.
+    /// `self` is displayed to the number of digits indicated by its dscale.
+    fn write<W: fmt::Write>(&self, f: &mut W) -> Result<(), fmt::Error> {
+        if self.is_nan() {
+            return write!(f, "NaN");
+        }
+
+        // Output a dash for negative values.
+        if self.sign == NUMERIC_NEG {
+            write!(f, "-")?;
+        }
+
+        // Output all digits before the decimal point.
+        if self.weight < 0 {
+            write!(f, "0")?;
+        } else {
+            let digits = self.digits();
+            debug_assert_eq!(digits.len(), self.ndigits as usize);
+
+            for d in 0..=self.weight {
+                let dig = if d < self.ndigits {
+                    digits[d as usize]
+                } else {
+                    0
+                };
+
+                // In the first digit, suppress extra leading decimal zeroes.
+                if d > 0 {
+                    write!(f, "{:>0width$}", dig, width = DEC_DIGITS)?;
+                } else {
+                    write!(f, "{}", dig)?;
+                }
+            }
+        }
+
+        // If requested, output a decimal point and all the digits that follow it.
+        if self.dscale > 0 {
+            write!(f, ".")?;
+
+            let digits = self.digits();
+            debug_assert_eq!(digits.len(), self.ndigits as usize);
+
+            let mut d = self.weight + 1;
+
+            for scale in (0..self.dscale).step_by(DEC_DIGITS) {
+                let dig = if d >= 0 && d < self.ndigits {
+                    digits[d as usize]
+                } else {
+                    0
+                };
+
+                if scale + DEC_DIGITS as i32 <= self.dscale {
+                    write!(f, "{:>0width$}", dig, width = DEC_DIGITS)?;
+                } else {
+                    // truncate the last digit
+                    let width = (self.dscale - scale) as usize;
+                    let dig = (0..DEC_DIGITS - width).fold(dig, |acc, _| acc / 10);
+                    write!(f, "{:>0width$}", dig, width = width)?;
+                }
+
+                d += 1;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Convert `self` to a normalised scientific notation text representation.
+    ///
+    /// This notation has the general form a * 10^b, where a is known as the
+    /// "significand" and b is known as the "exponent".
+    ///
+    /// Because we can't do superscript in ASCII (and because we want to copy
+    /// printf's behaviour) we display the exponent using E notation, with a
+    /// minimum of two exponent digits.
+    ///
+    /// For example, the value 1234 could be output as 1.2e+03.
+    ///
+    /// We assume that the exponent can fit into an int32.
+    ///
+    /// `rscale` is the number of decimal digits desired after the decimal point in
+    /// the output, negative values will be treated as meaning zero.
+    ///
+    /// `lower_exp` indicates use 'e' if true or else use 'E'.
+    fn write_sci<W: fmt::Write>(
+        &self,
+        f: &mut W,
+        rscale: i32,
+        lower_exp: bool,
+    ) -> Result<(), fmt::Error> {
+        if self.is_nan() {
+            return write!(f, "NaN");
+        }
+
+        let rscale = if rscale < 0 { 0 } else { rscale };
+
+        // Determine the exponent of this number in normalised form.
+        //
+        // This is the exponent required to represent the number with only one
+        // significant digit before the decimal place.
+        let exponent = if self.ndigits > 0 {
+            let mut exp = (self.weight + 1) * DEC_DIGITS as i32;
+            // Compensate for leading decimal zeroes in the first numeric digit by
+            // decrementing the exponent.
+            exp -= DEC_DIGITS as i32 - (self.digits()[0] as f64).log10() as i32;
+            exp
+        } else {
+            // If has no digits, then it must be zero.
+            //
+            // Zero doesn't technically have a meaningful exponent in normalised
+            // notation, but we just display the exponent as zero for consistency
+            // of output.
+            0
+        };
+
+        // The denominator is set to 10 raised to the power of the exponent.
+        //
+        // We then divide var by the denominator to get the significand, rounding
+        // to rscale decimal digits in the process.
+        let denom_scale = if exponent < 0 { -exponent } else { 0 };
+
+        let denominator = TEN
+            .power_int(exponent, denom_scale)
+            .expect("attempt to multiply with overflow");
+        let significand = self
+            .div_common(&denominator, rscale, true)
+            .expect("attempt to divide by zero");
+
+        if lower_exp {
+            write!(f, "{}e{:<+03}", significand, exponent)
+        } else {
+            write!(f, "{}E{:<+03}", significand, exponent)
+        }
+    }
+
+    /// Returns the appropriate result scale for scientific notation representation.
+    fn select_sci_scale(&self) -> i32 {
+        // 1 => (1, 0)
+        // 10 => (1, 1)
+        // 11 => (2, 0)
+        // 100 => (1, 2)
+        // 101 => (3, 0)
+        // 1010 => (3, 1)
+        fn count_zeros(digit: NumericDigit) -> (i32, i32) {
+            let mut val = digit;
+            let mut n = 0;
+            let mut zero = 0;
+
+            for _ in 0..DEC_DIGITS {
+                let d = val % 10;
+                val /= 10;
+
+                if d == 0 && n == 0 {
+                    // all previous d are zeros.
+                    zero += 1;
+                } else {
+                    n += 1;
+                }
+
+                if val == 0 {
+                    break;
+                }
+            }
+
+            (n, zero)
+        }
+
+        let digits = self.digits();
+
+        // find first non-zero digit from front to end
+        let (i, digit) = match digits.iter().enumerate().find(|(_, &d)| d != 0) {
+            Some((i, &digit)) => (i, digit),
+            None => {
+                // all digits are 0
+                return 0;
+            }
+        };
+
+        // find first non-zero digit from end to front
+        let (ri, rdigit) = match digits.iter().enumerate().rfind(|(_, &d)| d != 0) {
+            Some((ri, &rdigit)) => (ri, rdigit),
+            None => {
+                // all digits are 0, actually unreachable!
+                return 0;
+            }
+        };
+
+        debug_assert!(i <= ri);
+
+        if i == ri {
+            // only one digit
+            let (n, _) = count_zeros(digit);
+            return n - 1;
+        }
+
+        let (n, zero) = count_zeros(digit);
+        let (_, rzero) = count_zeros(rdigit);
+
+        let front = n + zero;
+        let end = DEC_DIGITS as i32 - rzero;
+
+        let result = front + end + (ri - i - 1) as i32 * DEC_DIGITS as i32 - 1;
+
+        result
+    }
+
     /// Add the absolute values of two variables into result.
     fn add_abs(&self, other: &Self) -> Self {
         debug_assert!(!self.is_nan());
@@ -693,9 +918,7 @@ impl NumericVar {
                     0 => {
                         // ABS(self) == ABS(other)
                         // result = ZERO
-                        let mut result = Self::zero();
-                        result.dscale = std::cmp::max(self.dscale, other.dscale);
-                        return result;
+                        return Self::scaled_zero(self.dscale.max(other.dscale));
                     }
                     1 => {
                         // ABS(self) > ABS(other)
@@ -723,9 +946,7 @@ impl NumericVar {
                     0 => {
                         // ABS(self) == ABS(other)
                         // result = ZERO
-                        let mut result = Self::zero();
-                        result.dscale = std::cmp::max(self.dscale, other.dscale);
-                        return result;
+                        return Self::scaled_zero(self.dscale.max(other.dscale));
                     }
                     1 => {
                         // ABS(self) > ABS(other)
@@ -774,9 +995,7 @@ impl NumericVar {
                     0 => {
                         // ABS(self) == ABS(other)
                         // result = ZERO
-                        let mut result = Self::zero();
-                        result.dscale = std::cmp::max(self.dscale, other.dscale);
-                        return result;
+                        return Self::scaled_zero(self.dscale.max(other.dscale));
                     }
                     1 => {
                         // ABS(self) > ABS(other)
@@ -804,9 +1023,7 @@ impl NumericVar {
                     0 => {
                         // ABS(self) == ABS(other)
                         // result = ZERO
-                        let mut result = Self::zero();
-                        result.dscale = std::cmp::max(self.dscale, other.dscale);
-                        return result;
+                        return Self::scaled_zero(self.dscale.max(other.dscale));
                     }
                     1 => {
                         // ABS(self) > ABS(other)
@@ -860,9 +1077,7 @@ impl NumericVar {
 
         if var1_ndigits == 0 || var2_ndigits == 0 {
             // one or both inputs is zero; so is result
-            let mut result = Self::zero();
-            result.dscale = rscale;
-            return result;
+            return Self::scaled_zero(rscale);
         }
 
         // Determine result sign and (maximum possible) weight
@@ -894,9 +1109,7 @@ impl NumericVar {
 
         if res_ndigits < 3 {
             // All input digits will be ignored; so result is zero
-            let mut result = Self::zero();
-            result.dscale = rscale;
-            return result;
+            return Self::scaled_zero(rscale);
         }
 
         // We do the arithmetic in an array "dig[]" of signed int32's.  Since
@@ -1071,9 +1284,7 @@ impl NumericVar {
 
         // Now result zero check
         if var1_ndigits == 0 {
-            let mut result = Self::zero();
-            result.dscale = rscale;
-            return Some(result);
+            return Some(Self::scaled_zero(rscale));
         }
 
         // Determine the result sign, weight and number of digits to calculate.
@@ -1305,9 +1516,7 @@ impl NumericVar {
 
         // Now result zero check
         if var1_ndigits == 0 {
-            let mut result = Self::zero();
-            result.dscale = rscale;
-            return Some(result);
+            return Some(Self::scaled_zero(rscale));
         }
 
         // Determine the result sign, weight and number of digits to calculate
@@ -1600,9 +1809,7 @@ impl NumericVar {
         let local_rscale = rscale + 8;
 
         if self.ndigits == 0 {
-            let mut result = Self::zero();
-            result.dscale = rscale;
-            return result;
+            return Self::scaled_zero(rscale);
         }
 
         // Initialize the result to the first guess
@@ -1638,6 +1845,157 @@ impl NumericVar {
         result.round_common(rscale);
 
         result
+    }
+
+    /// Raise base to the power of exp, where exp is an integer.
+    ///
+    /// Returns `None` if overflows.
+    ///
+    /// # Panics
+    /// Panics if self is zero and exp is less than zero.
+    fn power_int(&self, exp: i32, rscale: i32) -> Option<Self> {
+        debug_assert!(!self.is_nan());
+
+        // Handle some common special cases, as well as corner cases
+        match exp {
+            0 => {
+                // While 0 ^ 0 can be either 1 or indeterminate (error), we treat
+                // it as 1 because most programming languages do this. SQL:2003
+                // also requires a return value of 1.
+                // https://en.wikipedia.org/wiki/Exponentiation#Zero_to_the_zero_power
+                let mut result = ONE.clone();
+                result.dscale = rscale; // no need to round
+                return Some(result);
+            }
+            1 => {
+                let mut result = self.clone();
+                result.round_common(rscale);
+                return Some(result);
+            }
+            -1 => {
+                let result = ONE
+                    .div_common(self, rscale, true)
+                    .expect("attempt to divide by zero");
+                return Some(result);
+            }
+            2 => {
+                let result = self.mul_common(self, rscale);
+                return Some(result);
+            }
+            _ => (),
+        }
+
+        // Handle the special case where the base is zero
+        if self.ndigits == 0 {
+            assert!(exp >= 0, "attempt to divide by zero");
+            return Some(Self::scaled_zero(rscale));
+        }
+
+        // The general case repeatedly multiplies base according to the bit
+        // pattern of exp.
+        //
+        // First we need to estimate the weight of the result so that we know how
+        // many significant digits are needed.
+        let digits = self.digits();
+        let mut f = digits[0] as f64;
+        let mut p = self.weight * DEC_DIGITS as i32;
+
+        for i in 1..self.ndigits as usize {
+            if i * DEC_DIGITS < 16 {
+                break;
+            }
+
+            f = f * NBASE as f64 + digits[i] as f64;
+            p -= DEC_DIGITS as i32;
+        }
+
+        // We have base ~= f * 10^p
+        // so log10(result) = log10(base^exp) ~= exp * (log10(f) + p)
+        f = exp as f64 * (f.log10() + p as f64);
+
+        // Apply crude overflow/underflow tests so we can exit early if the result
+        // certainly will overflow/underflow.
+        if f > 3.0 * i16::max_value() as f64 * DEC_DIGITS as f64 {
+            return None;
+        }
+
+        if f + 1.0 < (-rscale) as f64 || f + 1.0 < (-NUMERIC_MAX_DISPLAY_SCALE) as f64 {
+            return Some(Self::scaled_zero(rscale));
+        }
+
+        // Approximate number of significant digits in the result.  Note that the
+        // underflow test above means that this is necessarily >= 0.
+        let mut sig_digits = 1 + rscale + f as i32;
+
+        // The multiplications to produce the result may introduce an error of up
+        // to around log10(abs(exp)) digits, so work with this many extra digits
+        // of precision (plus a few more for good measure).
+        sig_digits += (exp.abs() as f64).ln() as i32 + 8;
+
+        // Now we can proceed with the multiplications.
+        let mut neg = exp < 0;
+        let mut mask = exp.abs();
+
+        let mut base_prod = self.clone();
+
+        let mut result = if mask & 1 != 0 {
+            self.clone()
+        } else {
+            ONE.clone()
+        };
+
+        loop {
+            mask >>= 1;
+            if mask <= 0 {
+                break;
+            }
+
+            // Do the multiplications using rscales large enough to hold the
+            // results to the required number of significant digits, but don't
+            // waste time by exceeding the scales of the numbers themselves.
+            let local_rscale = (sig_digits - 2 * base_prod.weight * DEC_DIGITS as i32)
+                .min(2 * base_prod.dscale)
+                .max(NUMERIC_MIN_DISPLAY_SCALE);
+
+            base_prod = base_prod.mul_common(&base_prod, local_rscale);
+
+            if mask & 1 != 0 {
+                let local_rscale = (sig_digits
+                    - (base_prod.weight + result.weight) * DEC_DIGITS as i32)
+                    .min(base_prod.dscale + result.dscale)
+                    .max(NUMERIC_MIN_DISPLAY_SCALE);
+
+                result = base_prod.mul_common(&result, local_rscale);
+            }
+
+            // When abs(base) > 1, the number of digits to the left of the decimal
+            // point in base_prod doubles at each iteration, so if exp is large we
+            // could easily spend large amounts of time and memory space doing the
+            // multiplications.  But once the weight exceeds what will fit in
+            // int16, the final result is guaranteed to overflow (or underflow, if
+            // exp < 0), so we can give up before wasting too many cycles.
+            if base_prod.weight > i16::max_value() as i32 || result.weight > i16::max_value() as i32
+            {
+                // overflow, unless neg, in which case result should be 0
+                if !neg {
+                    return None;
+                }
+                result.zeroed();
+                neg = false;
+                break;
+            }
+        }
+
+        // Compensate for input sign, and round to requested rscale
+        if neg {
+            result = ONE
+                .div_fast_common(&result, rscale, true)
+                .expect("attempt to divide by zero");
+        } else {
+            result.round_common(rscale);
+        }
+
+        Some(result)
     }
 
     /// Negate this value.
@@ -1771,73 +2129,6 @@ impl NumericVar {
     }
 }
 
-impl fmt::Display for NumericVar {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        if self.is_nan() {
-            return write!(f, "NaN");
-        }
-
-        // Output a dash for negative values.
-        if self.sign == NUMERIC_NEG {
-            write!(f, "-")?;
-        }
-
-        // Output all digits before the decimal point.
-        if self.weight < 0 {
-            write!(f, "0")?;
-        } else {
-            let digits = self.digits();
-            debug_assert_eq!(digits.len(), self.ndigits as usize);
-
-            for d in 0..=self.weight {
-                let dig = if d < self.ndigits {
-                    digits[d as usize]
-                } else {
-                    0
-                };
-
-                // In the first digit, suppress extra leading decimal zeroes.
-                if d > 0 {
-                    write!(f, "{:>0width$}", dig, width = DEC_DIGITS)?;
-                } else {
-                    write!(f, "{}", dig)?;
-                }
-            }
-        }
-
-        // If requested, output a decimal point and all the digits that follow it.
-        if self.dscale > 0 {
-            write!(f, ".")?;
-
-            let digits = self.digits();
-            debug_assert_eq!(digits.len(), self.ndigits as usize);
-
-            let mut d = self.weight + 1;
-
-            for scale in (0..self.dscale).step_by(DEC_DIGITS) {
-                let dig = if d >= 0 && d < self.ndigits {
-                    digits[d as usize]
-                } else {
-                    0
-                };
-
-                if scale + DEC_DIGITS as i32 <= self.dscale {
-                    write!(f, "{:>0width$}", dig, width = DEC_DIGITS)?;
-                } else {
-                    // truncate the last digit
-                    let width = (self.dscale - scale) as usize;
-                    let dig = (0..DEC_DIGITS - width).fold(dig, |acc, _| acc / 10);
-                    write!(f, "{:>0width$}", dig, width = width)?;
-                }
-
-                d += 1;
-            }
-        }
-
-        Ok(())
-    }
-}
-
 /// Reads a `NumericDigit` from `&[u8]`.
 #[inline]
 fn read_numeric_digit(s: &[u8]) -> NumericDigit {
@@ -1850,6 +2141,27 @@ fn read_numeric_digit(s: &[u8]) -> NumericDigit {
     }
 
     digit
+}
+
+impl fmt::Display for NumericVar {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        self.write(f)
+    }
+}
+
+impl fmt::LowerExp for NumericVar {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        let rscale = self.select_sci_scale();
+        self.write_sci(f, rscale, true)
+    }
+}
+
+impl fmt::UpperExp for NumericVar {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        let rscale = self.select_sci_scale();
+        self.write_sci(f, rscale, false)
+    }
 }
 
 #[cfg(test)]
@@ -1995,5 +2307,106 @@ mod tests {
         assert_abs("0.0", "0.0");
         assert_abs("123456.123456", "123456.123456");
         assert_abs("-123456.123456", "123456.123456");
+    }
+
+    fn assert_write_sci(val: &str, scale: i32, expected: &str) {
+        let var = val.parse::<NumericVar>().unwrap();
+        let mut s = String::new();
+        var.write_sci(&mut s, scale, true).unwrap();
+        assert_eq!(s, expected);
+    }
+
+    #[test]
+    fn write_sci() {
+        assert_write_sci("123456789", 9, "1.234567890e+08");
+        assert_write_sci("123456789", 8, "1.23456789e+08");
+        assert_write_sci("123456789", 7, "1.2345679e+08");
+        assert_write_sci("123456789", 6, "1.234568e+08");
+        assert_write_sci("123456789", 5, "1.23457e+08");
+        assert_write_sci("123456789", 4, "1.2346e+08");
+        assert_write_sci("123456789", 3, "1.235e+08");
+        assert_write_sci("123456789", 2, "1.23e+08");
+        assert_write_sci("123456789", 1, "1.2e+08");
+        assert_write_sci("123456789", 0, "1e+08");
+        assert_write_sci("123456789", -1, "1e+08");
+        assert_write_sci("0.123456789", 9, "1.234567890e-01");
+        assert_write_sci("0.123456789", 8, "1.23456789e-01");
+        assert_write_sci("0.123456789", 7, "1.2345679e-01");
+        assert_write_sci("0.123456789", 6, "1.234568e-01");
+        assert_write_sci("0.123456789", 5, "1.23457e-01");
+        assert_write_sci("0.123456789", 4, "1.2346e-01");
+        assert_write_sci("0.123456789", 3, "1.235e-01");
+        assert_write_sci("0.123456789", 2, "1.23e-01");
+        assert_write_sci("0.123456789", 1, "1.2e-01");
+        assert_write_sci("0.123456789", 0, "1e-01");
+        assert_write_sci("0.123456789", -1, "1e-01");
+        assert_write_sci("0.0", 0, "0e+00");
+        assert_write_sci("0.0", 1, "0.0e+00");
+        assert_write_sci("0.0", 2, "0.00e+00");
+        assert_write_sci("12345.6789e100", 9, "1.234567890e+104");
+        assert_write_sci("12345.6789e-100", 9, "1.234567890e-96");
+    }
+
+    fn assert_sci(val: &str, expected: &str) {
+        let var = val.parse::<NumericVar>().unwrap();
+        let s = format!("{:E}", var);
+        assert_eq!(s, expected);
+    }
+
+    #[test]
+    fn sci() {
+        assert_sci("1234567890", "1.23456789E+09");
+        assert_sci("123456789", "1.23456789E+08");
+        assert_sci("12345678.9", "1.23456789E+07");
+        assert_sci("1234567.89", "1.23456789E+06");
+        assert_sci("123456.789", "1.23456789E+05");
+        assert_sci("12345.6789", "1.23456789E+04");
+        assert_sci("1234.56789", "1.23456789E+03");
+        assert_sci("123.456789", "1.23456789E+02");
+        assert_sci("12.3456789", "1.23456789E+01");
+        assert_sci("1.23456789", "1.23456789E+00");
+        assert_sci("0.123456789", "1.23456789E-01");
+
+        assert_sci("1", "1E+00");
+        assert_sci("10", "1E+01");
+        assert_sci("100", "1E+02");
+        assert_sci("1000", "1E+03");
+        assert_sci("10000", "1E+04");
+        assert_sci("100000", "1E+05");
+        assert_sci("1000000", "1E+06");
+        assert_sci("10000000", "1E+07");
+        assert_sci("100000000", "1E+08");
+        assert_sci("1000000000", "1E+09");
+        assert_sci("10000000000", "1E+10");
+        assert_sci("100000000000", "1E+11");
+
+        assert_sci("1e100", "1E+100");
+        assert_sci("1e1000", "1E+1000");
+        assert_sci("1e10000", "1E+10000");
+        assert_sci("1e100000", "1E+100000");
+
+        assert_sci("11", "1.1E+01");
+        assert_sci("101", "1.01E+02");
+        assert_sci("1001", "1.001E+03");
+        assert_sci("10001", "1.0001E+04");
+        assert_sci("100001", "1.00001E+05");
+        assert_sci("1000001", "1.000001E+06");
+        assert_sci("10000001", "1.0000001E+07");
+        assert_sci("100000001", "1.00000001E+08");
+        assert_sci("1000000001", "1.000000001E+09");
+        assert_sci("10000000001", "1.0000000001E+10");
+        assert_sci("100000000001", "1.00000000001E+11");
+
+        assert_sci("1.1", "1.1E+00");
+        assert_sci("1.01", "1.01E+00");
+        assert_sci("1.001", "1.001E+00");
+        assert_sci("1.0001", "1.0001E+00");
+        assert_sci("1.00001", "1.00001E+00");
+        assert_sci("1.000001", "1.000001E+00");
+        assert_sci("1.0000001", "1.0000001E+00");
+        assert_sci("1.00000001", "1.00000001E+00");
+        assert_sci("1.000000001", "1.000000001E+00");
+        assert_sci("1.0000000001", "1.0000000001E+00");
+        assert_sci("1.00000000001", "1.00000000001E+00");
     }
 }
