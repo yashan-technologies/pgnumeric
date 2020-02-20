@@ -50,11 +50,19 @@ const ROUND_POWERS: [NumericDigit; 4] = [0, 1000, 100, 10];
 lazy_static! {
     // 0.5
     static ref ZERO_POINT_FIVE: NumericVar = ".5".parse().unwrap();
+    // 0.9
+    static ref ZERO_POINT_NINE: NumericVar = ".9".parse().unwrap();
+    // 1.1
+    static ref ONE_POINT_ONE: NumericVar = "1.1".parse().unwrap();
     // 1
     static ref ONE: NumericVar = "1".parse().unwrap();
+    // 2
+    static ref TWO: NumericVar = "2".parse().unwrap();
     // 10
     static ref TEN: NumericVar = "10".parse().unwrap();
 }
+
+const DIVIDE_BY_ZERO_MSG: &str = "attempt to divide by zero";
 
 /// `NumericVar` is the format we use for arithmetic.
 /// The value represented by a NumericVar is determined by the `sign`, `weight`,
@@ -605,7 +613,7 @@ impl NumericVar {
             .expect("attempt to multiply with overflow");
         let significand = self
             .div_common(&denominator, rscale, true)
-            .expect("attempt to divide by zero");
+            .expect(DIVIDE_BY_ZERO_MSG);
 
         if lower_exp {
             write!(f, "{}e{:<+03}", significand, exponent)
@@ -1875,7 +1883,7 @@ impl NumericVar {
             -1 => {
                 let result = ONE
                     .div_common(self, rscale, true)
-                    .expect("attempt to divide by zero");
+                    .expect(DIVIDE_BY_ZERO_MSG);
                 return Some(result);
             }
             2 => {
@@ -1887,7 +1895,7 @@ impl NumericVar {
 
         // Handle the special case where the base is zero
         if self.ndigits == 0 {
-            assert!(exp >= 0, "attempt to divide by zero");
+            assert!(exp >= 0, DIVIDE_BY_ZERO_MSG);
             return Some(Self::scaled_zero(rscale));
         }
 
@@ -1990,12 +1998,175 @@ impl NumericVar {
         if neg {
             result = ONE
                 .div_fast_common(&result, rscale, true)
-                .expect("attempt to divide by zero");
+                .expect(DIVIDE_BY_ZERO_MSG);
         } else {
             result.round_common(rscale);
         }
 
         Some(result)
+    }
+
+    /// Compute the natural log of `self`
+    fn ln_common(&self, rscale: i32) -> Self {
+        debug_assert!(!self.is_nan());
+        debug_assert!(self.cmp_common(&Self::zero()) > 0);
+
+        let mut x = self.clone();
+        let mut fact = TWO.clone();
+
+        // Reduce input into range 0.9 < x < 1.1 with repeated sqrt() operations.
+        //
+        // The final logarithm will have up to around rscale+6 significant digits.
+        // Each sqrt() will roughly halve the weight of x, so adjust the local
+        // rscale as we work so that we keep this many significant digits at each
+        // step (plus a few more for good measure).
+        while x.cmp_common(&ZERO_POINT_NINE) <= 0 {
+            let mut local_rscale = rscale - x.weight * DEC_DIGITS as i32 / 2 + 8;
+            local_rscale = local_rscale.max(NUMERIC_MIN_DISPLAY_SCALE);
+            x = x.sqrt_common(local_rscale);
+            fact = fact.mul_common(&TWO, 0);
+        }
+        while x.cmp_common(&ONE_POINT_ONE) >= 0 {
+            let mut local_rscale = rscale - x.weight * DEC_DIGITS as i32 / 2 + 8;
+            local_rscale = local_rscale.max(NUMERIC_MIN_DISPLAY_SCALE);
+            x = x.sqrt_common(local_rscale);
+            fact = fact.mul_common(&TWO, 0);
+        }
+
+        // We use the Taylor series for 0.5 * ln((1+z)/(1-z)),
+        //
+        // z + z^3/3 + z^5/5 + ...
+        //
+        // where z = (x-1)/(x+1) is in the range (approximately) -0.053 .. 0.048
+        // due to the above range-reduction of x.
+        //
+        // The convergence of this is not as fast as one would like, but is
+        // tolerable given that z is small.
+        let local_rscale = rscale + 8;
+
+        let mut result = x.sub_common(&ONE);
+        let mut elem = x.add_common(&ONE);
+        result = result
+            .div_fast_common(&elem, local_rscale, true)
+            .expect(DIVIDE_BY_ZERO_MSG);
+        let mut xx = result.clone();
+        x = result.mul_common(&result, local_rscale);
+
+        let mut ni = ONE.clone();
+
+        loop {
+            ni = ni.add_common(&TWO);
+            xx = xx.mul_common(&x, local_rscale);
+            elem = xx
+                .div_fast_common(&ni, local_rscale, true)
+                .expect(DIVIDE_BY_ZERO_MSG);
+
+            if elem.ndigits == 0 {
+                break;
+            }
+
+            result = result.add_common(&elem);
+
+            if elem.weight < (result.weight - local_rscale * 2 / DEC_DIGITS as i32) {
+                break;
+            }
+        }
+
+        // Compensate for argument range reduction, round to requested rscale
+        result = result.mul_common(&fact, rscale);
+
+        result
+    }
+
+    /// Compute the logarithm of `self` in a given base.
+    ///
+    /// Note: this routine chooses dscale of the result.
+    fn log_common(&self, base: &NumericVar) -> Self {
+        debug_assert!(!self.is_nan());
+        debug_assert!(!base.is_nan());
+        debug_assert!(self.cmp_common(&Self::zero()) > 0);
+
+        // Estimated dweights of ln(base), ln(self) and the final result
+        let ln_base_dweight = base.estimate_ln_dweight();
+        let ln_num_dweight = self.estimate_ln_dweight();
+        let result_dweight = ln_num_dweight - ln_base_dweight;
+
+        // Select the scale of the result so that it will have at least
+        // NUMERIC_MIN_SIG_DIGITS significant digits and is not less than either
+        // input's display scale.
+        let rscale = (NUMERIC_MIN_SIG_DIGITS - result_dweight)
+            .max(base.dscale)
+            .max(self.dscale)
+            .max(NUMERIC_MIN_DISPLAY_SCALE)
+            .min(NUMERIC_MAX_DISPLAY_SCALE);
+
+        // Set the scales for ln(base) and ln(num) so that they each have more
+        // significant digits than the final result.
+        let ln_base_rscale =
+            (rscale + result_dweight - ln_base_dweight + 8).max(NUMERIC_MIN_DISPLAY_SCALE);
+        let ln_num_rscale =
+            (rscale + result_dweight - ln_num_dweight + 8).max(NUMERIC_MIN_DISPLAY_SCALE);
+
+        // Form natural logarithms
+        let ln_base = base.ln_common(ln_base_rscale);
+        let ln_num = self.ln_common(ln_num_rscale);
+
+        // Divide and round to the required scale
+        let result = ln_num
+            .div_fast_common(&ln_base, rscale, true)
+            .expect(DIVIDE_BY_ZERO_MSG);
+
+        result
+    }
+
+    /// Estimate the dweight of the most significant decimal digit of the natural
+    /// logarithm of a number.
+    ///
+    /// Essentially, we're approximating `log10(abs(ln(self)))`.  This is used to
+    /// determine the appropriate rscale when computing natural logarithms.
+    fn estimate_ln_dweight(&self) -> i32 {
+        debug_assert!(!self.is_nan());
+
+        let ln_dweight: i32;
+
+        if self.cmp_common(&ZERO_POINT_NINE) >= 0 && self.cmp_common(&ONE_POINT_ONE) <= 0 {
+            // 0.9 <= self <= 1.1
+            //
+            // ln(self) has a negative weight (possibly very large).  To get a
+            // reasonably accurate result, estimate it using ln(1+x) ~= x.
+            let x = self.sub_common(&ONE);
+            if x.ndigits > 0 {
+                // Use weight of most significant decimal digit of x
+                ln_dweight = x.weight * DEC_DIGITS as i32 + (x.digits()[0] as f64).log10() as i32;
+            } else {
+                // x = 0.  Since ln(1) = 0 exactly, we don't need extra digits
+                ln_dweight = 0;
+            }
+        } else {
+            // Estimate the logarithm using the first couple of digits from the
+            // input number.  This will give an accurate result whenever the input
+            // is not too close to 1.
+            if self.ndigits > 0 {
+                let d = self.digits();
+
+                let mut digits = d[0] as i32;
+                let mut dweight = self.weight * DEC_DIGITS as i32;
+
+                if self.ndigits > 1 {
+                    digits = digits * NBASE + d[1] as i32;
+                    dweight -= DEC_DIGITS as i32;
+                }
+
+                // We have self ~= digits * 10^dweight
+                // so ln(self) ~= ln(digits) + dweight * ln(10)
+                let ln_var = (digits as f64).ln() + dweight as f64 * std::f64::consts::LN_10;
+                ln_dweight = ln_var.abs().log10() as i32;
+            } else {
+                ln_dweight = 0;
+            }
+        }
+
+        ln_dweight
     }
 
     /// Negate this value.
@@ -2102,6 +2273,7 @@ impl NumericVar {
     ///
     /// # Panics
     /// Panics if `self` is negative.
+    #[inline]
     pub fn sqrt(&self) -> Self {
         assert!(
             !self.is_negative(),
@@ -2126,6 +2298,74 @@ impl NumericVar {
 
         let result = self.sqrt_common(rscale);
         result
+    }
+
+    /// Compute the natural logarithm of `self`.
+    ///
+    /// # Panics
+    /// Panics if `self <= 0`.
+    #[inline]
+    pub fn ln(&self) -> Self {
+        if self.is_nan() {
+            return Self::nan();
+        }
+
+        let cmp = self.cmp_common(&Self::zero());
+        assert_ne!(cmp, 0, "cannot take logarithm of zero");
+        assert!(cmp > 0, "cannot take logarithm of a negative number");
+
+        // Estimated dweight of logarithm
+        let ln_dweight = self.estimate_ln_dweight();
+
+        let rscale = (NUMERIC_MIN_SIG_DIGITS - ln_dweight)
+            .max(self.dscale)
+            .max(NUMERIC_MIN_DISPLAY_SCALE)
+            .min(NUMERIC_MAX_DISPLAY_SCALE);
+
+        let result = self.ln_common(rscale);
+        result
+    }
+
+    /// Compute the logarithm of `self` in a given base.
+    ///
+    /// # Panics
+    /// Panics if `self <= 0` or `base <= 0`.
+    #[inline]
+    pub fn log(&self, base: &Self) -> Self {
+        if self.is_nan() || base.is_nan() {
+            return Self::nan();
+        }
+
+        let cmp = self.cmp_common(&Self::zero());
+        assert_ne!(cmp, 0, "cannot take logarithm of zero");
+        assert!(cmp > 0, "cannot take logarithm of a negative number");
+
+        let cmp = base.cmp_common(&Self::zero());
+        assert_ne!(cmp, 0, "cannot take logarithm of zero");
+        assert!(cmp > 0, "cannot take logarithm of a negative number");
+
+        //  Call log_common() to compute and return the result; note it handles scale
+        //	selection itself.
+        let result = self.log_common(base);
+        result
+    }
+
+    /// Compute the base 2 logarithm of `self`.
+    ///
+    /// # Panics
+    /// Panics if `self <= 0`.
+    #[inline]
+    pub fn log2(&self) -> Self {
+        self.log(&TWO)
+    }
+
+    /// Compute the base 10 logarithm of `self`.
+    ///
+    /// # Panics
+    /// Panics if `self <= 0`.
+    #[inline]
+    pub fn log10(&self) -> Self {
+        self.log(&TEN)
     }
 }
 
@@ -2408,5 +2648,182 @@ mod tests {
         assert_sci("1.000000001", "1.000000001E+00");
         assert_sci("1.0000000001", "1.0000000001E+00");
         assert_sci("1.00000000001", "1.00000000001E+00");
+    }
+
+    fn assert_ln(val: &str, expected: &str) {
+        let var = val.parse::<NumericVar>().unwrap();
+        let ln = var.ln();
+        assert_eq!(ln.to_string(), expected);
+    }
+
+    #[test]
+    fn ln() {
+        assert_ln("0.1", "-2.3025850929940457");
+        assert_ln("0.01", "-4.6051701859880914");
+        assert_ln("0.001", "-6.9077552789821371");
+        assert_ln("0.0001", "-9.2103403719761827");
+        assert_ln("0.00001", "-11.512925464970228");
+        assert_ln("1e-100", "-230.2585092994045684017991454684364207601101488628772976033327900967572609677352480235997205089598298342");
+        assert_ln("1e-1000", "-2302.5850929940456840179914546843642076011014886287729760333279009675726096773524802359972050895982983419677840422862486334095254650828067566662873690987816894829072083255546808437998948262331985283935053089653777326288461633662222876982198867465436674744042432743651550489343149393914796194044002221051017141748003688084012647080685567743216228355220114804663715659121373450747856947683463616792101806445070648000277502684916746550586856935673420670581136429224554405758925724208241314695689016758940256776311356919292033376587141660230105703089634572075440370847469940168269282808481184289314848524948644871927809676271275775397027668605952496716674183485704422507197965004714951050492214776567636938662976979522110718264549734772662425709429322582798502585509785265383207606726317164309505995087807523710333101197857547331541421808427543863591778117054309827482385045648019095610299291824318237525357709750539565187697510374970888692180205189339507238539205144634197265287286965110862571492198849978749");
+        assert_ln("1", "0.0000000000000000");
+        assert_ln("1.1", "0.09531017980432486");
+        assert_ln("1.01", "0.009950330853168083");
+        assert_ln("1.001", "0.0009995003330835332");
+        assert_ln("1.0001", "0.00009999500033330834");
+        assert_ln("1.00001", "0.000009999950000333331");
+        assert_ln("10", "2.3025850929940457");
+        assert_ln("255", "5.5412635451584261");
+        assert_ln("65535", "11.090339630053646");
+        assert_ln("4294967295", "22.180709777685419");
+        assert_ln("18446744073709551615", "44.361419555836500");
+        assert_ln(
+            "340282366920938463463374607431768211455",
+            "88.722839111673000",
+        );
+        assert_ln("1e100", "230.25850929940457");
+        assert_ln("1e1001", "2304.8876780870397");
+        assert_ln("1e10001", "23028.153515033451");
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot take logarithm of zero")]
+    fn ln_0() {
+        assert_ln("0", "0");
+    }
+
+    fn assert_log(val: &str, base: &str, expected: &str) {
+        let var = val.parse::<NumericVar>().unwrap();
+        let base = base.parse::<NumericVar>().unwrap();
+        let log = var.log(&base);
+        assert_eq!(log.to_string(), expected);
+    }
+
+    fn assert_log2(val: &str, expected: &str) {
+        let var = val.parse::<NumericVar>().unwrap();
+        let log2 = var.log2();
+        assert_eq!(log2.to_string(), expected);
+    }
+
+    fn assert_log10(val: &str, expected: &str) {
+        let var = val.parse::<NumericVar>().unwrap();
+        let log2 = var.log10();
+        assert_eq!(log2.to_string(), expected);
+    }
+
+    #[test]
+    fn log() {
+        assert_log("123456789", "0.1", "-8.091514977169270");
+        assert_log("123456789", "0.01", "-4.045757488584635");
+        assert_log("123456789", "0.001", "-2.697171659056423");
+        assert_log("123456789", "0.0001", "-2.022878744292318");
+        assert_log("123456789", "0.00001", "-1.6183029954338541");
+        assert_log("123456789", "1e-100", "-0.0809151497716927044751833362305954725851507333894466643029235223096383572364268409654249033542824907");
+        assert_log("123456789", "1e-1000", "-0.0080915149771692704475183336230595472585150733389446664302923522309638357236426840965424903354282490714591977064292483065730693861907022223547607755491396888409765838403429233742455780032387482532982483730949256827998472796480203130971398558667948371549217283245362947607635167242507474630341758812157681310192340391795065372673100186376370557220664797321285789377736680121228136432735567035676397169530123991016761597669812656343071910099944110121223021293791969828583567943015017403000731019269674207303912897923421346036243583629643713841067462728296494607774007896800993663103166139287683355421131471317722252919551931858458150486112888168828352759557201100071905150932496234120660723567674094677213384931190497902151138415034533326948426138261992881890187246162824877548439693953630541552707646627425641627097402213257495139809203524531816818006021543108125322974626627517043467787486226245595396381375078350380205164747109070113983331132398425840431723176948689874499109975748440690776601319442");
+        assert_log("123456789", "1.1", "195.48176075649987");
+        assert_log("123456789", "1.01", "1872.4404284743931");
+        assert_log("123456789", "1.001", "18640.715915210105");
+        assert_log("123456789", "1.0001", "186323.33320730935");
+        assert_log("123456789", "1.00001", "1863149.4923021588");
+        assert_log("123456789", "10", "8.091514977169270");
+        assert_log("123456789", "255", "3.362302047959233");
+        assert_log("123456789", "65535", "1.6799667447224873");
+        assert_log("123456789", "4294967295", "0.8399822166607071");
+        assert_log("123456789", "18446744073709551615", "0.4199911083259449");
+        assert_log(
+            "123456789",
+            "340282366920938463463374607431768211455",
+            "0.2099955541629725",
+        );
+        assert_log("123456789", "1e100", "0.08091514977169270");
+        assert_log("123456789", "1e1001", "0.008083431545623647");
+        assert_log("123456789", "1e10001", "0.0008090705906578613");
+    }
+
+    #[test]
+    fn log2() {
+        assert_log2("0.1", "-3.3219280948873623");
+        assert_log2("0.01", "-6.6438561897747247");
+        assert_log2("0.001", "-9.9657842846620870");
+        assert_log2("0.0001", "-13.2877123795494494");
+        assert_log2("0.00001", "-16.609640474436812");
+        assert_log2("1e-100", "-332.1928094887362347870319429489390175864831393024580612054756395815934776608625215850139743359370155100");
+        assert_log2("1e-1000", "-3321.9280948873623478703194294893901758648313930245806120547563958159347766086252158501397433593701550996573717102502518268240969842635268882753027729986553938519513526575055686430176091900248916669414333740119031241873751097158664675401791896558067358307796884327258832749925224489023835599764173941379280097727566863554779014867450578458847802710422545609722346579569554153701915764117177924716513500239211271473393614407233972115748510070949878916588808313221948067932982323259311950671399507837003367342480706635275008406917626386253546880153686216184188608589948353813214998930270441792078659226018229653715753672396606951164868368466238585084860629905426994692791162732061340064467048476340704373523367422128308967036457909216772190902142196214245744465852453594844881548345925142954093735390654944863277929842429159118113116329812576945019815750379218553848782035516019737827728888175987433286607271239382520221333280525512488274344488424531654650612414891822867932526642928116599228516273450818601");
+        assert_log2("1", "0.0000000000000000");
+        assert_log2("1.1", "0.13750352374993491");
+        assert_log2("1.01", "0.014355292977070041");
+        assert_log2("1.001", "0.0014419741739064804");
+        assert_log2("1.0001", "0.00014426229109455418");
+        assert_log2("1.00001", "0.000014426878274618484");
+        assert_log2("10", "3.3219280948873623");
+        assert_log2("255", "7.9943534368588579");
+        assert_log2("65535", "15.999977986052736");
+        assert_log2("4294967295", "31.999999999664096");
+        assert_log2("18446744073709551615", "64.000000000000000");
+        assert_log2(
+            "340282366920938463463374607431768211455",
+            "128.000000000000000",
+        );
+        assert_log2("1e100", "332.19280948873623");
+        assert_log2("1e1001", "3325.2500229822497");
+        assert_log2("1e10001", "33222.602876968511");
+    }
+
+    #[test]
+    fn log10() {
+        assert_log10("0.1", "-1.0000000000000000");
+        assert_log10("0.01", "-2.0000000000000000");
+        assert_log10("0.001", "-3.0000000000000000");
+        assert_log10("0.0001", "-4.0000000000000000");
+        assert_log10("0.00001", "-5.000000000000000");
+        assert_log10("1e-100", "-100.0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000");
+        assert_log10("1e-1000", "-1000.0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000");
+        assert_log10("1", "0.0000000000000000");
+        assert_log10("1.1", "0.04139268515822504");
+        assert_log10("1.01", "0.004321373782642574");
+        assert_log10("1.001", "0.0004340774793186407");
+        assert_log10("1.0001", "0.00004342727686266964");
+        assert_log10("1.00001", "0.000004342923104453187");
+        assert_log10("10", "1.0000000000000000");
+        assert_log10("255", "2.4065401804339552");
+        assert_log10("65535", "4.816473303765250");
+        assert_log10("4294967295", "9.632959861146281");
+        assert_log10("18446744073709551615", "19.265919722494796");
+        assert_log10(
+            "340282366920938463463374607431768211455",
+            "38.531839444989593",
+        );
+        assert_log10("1e100", "100.00000000000000");
+        assert_log10("1e1001", "1001.0000000000000");
+        assert_log10("1e10001", "10001.000000000000");
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot take logarithm of zero")]
+    fn log_base_0() {
+        assert_log("10", "0", "0");
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to divide by zero")]
+    fn log_base_1() {
+        assert_log("10", "1", "0");
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot take logarithm of a negative number")]
+    fn log_base_neg_1() {
+        assert_log("10", "-1", "0");
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot take logarithm of zero")]
+    fn log_num_0() {
+        assert_log("0", "10", "0");
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot take logarithm of a negative number")]
+    fn log_num_neg_1() {
+        assert_log("-1", "10", "0");
     }
 }

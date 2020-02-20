@@ -2,7 +2,7 @@
 
 //! Implementing operators for numeric.
 
-use crate::NumericVar;
+use crate::{NumericVar, DIVIDE_BY_ZERO_MSG};
 use std::cmp::Ordering;
 use std::ops::{
     Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Rem, RemAssign, Sub, SubAssign,
@@ -207,7 +207,7 @@ impl Div<&NumericVar> for &NumericVar {
 
     #[inline]
     fn div(self, other: &NumericVar) -> Self::Output {
-        self.checked_div(other).expect("attempt to divide by zero")
+        self.checked_div(other).expect(DIVIDE_BY_ZERO_MSG)
     }
 }
 
@@ -270,7 +270,7 @@ impl Rem<&NumericVar> for &NumericVar {
             return NumericVar::nan();
         }
 
-        self.mod_common(other).expect("attempt to divide by zero")
+        self.mod_common(other).expect(DIVIDE_BY_ZERO_MSG)
     }
 }
 
