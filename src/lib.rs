@@ -19,7 +19,7 @@ use std::fmt;
 /// Limit on the precision (and hence scale) specifiable in a NUMERIC typmod.
 /// Note that the implementation limit on the length of a numeric value is
 /// much larger --- beware of what you use this for!
-const NUMERIC_MAX_PRECISION: i32 = 1000;
+pub const NUMERIC_MAX_PRECISION: i32 = 1000;
 
 // Internal limits on the scales chosen for calculation results
 const NUMERIC_MAX_DISPLAY_SCALE: i32 = NUMERIC_MAX_PRECISION;
@@ -43,6 +43,8 @@ const NUMERIC_POS: i32 = 0x0000;
 const NUMERIC_NEG: i32 = 0x4000;
 //const NUMERIC_SHORT: i32 = 0x8000;
 const NUMERIC_NAN: i32 = 0xC000;
+
+const VAR_HEADER_SIZE: i32 = std::mem::size_of::<i32>() as i32;
 
 type NumericDigit = i16;
 
@@ -2698,6 +2700,57 @@ impl NumericVar {
 
         Some(result)
     }
+
+    /// Do bounds checking and rounding according to `typmod`.
+    ///
+    /// Returns true if overflows.
+    ///
+    /// Notes that no matter whether overflows, `self` will be rounded.
+    pub fn apply_typmod(&mut self, typmod: Typmod) -> bool {
+        // Do nothing if we have a default typmod (-1)
+        if typmod.value() < VAR_HEADER_SIZE {
+            return false;
+        }
+
+        let (precision, scale) = typmod.extract();
+        let max_digits = precision - scale;
+
+        // Round to target scale (and set self.dscale)
+        self.round_common(scale);
+
+        // Check for overflow - note we can't do this before rounding, because
+        // rounding could raise the weight.  Also note that the self's weight could
+        // be inflated by leading zeroes, which will be stripped before storage
+        // but perhaps might not have been yet. In any case, we must recognize a
+        // true zero, whose weight doesn't mean anything.
+        let mut ddigits = (self.weight + 1) * DEC_DIGITS as i32;
+        if ddigits > max_digits {
+            // Determine true weight; and check for all-zero result
+            for &dig in self.digits().iter() {
+                if dig != 0 {
+                    // Adjust for any high-order decimal zero digits
+                    debug_assert_eq!(DEC_DIGITS, 4);
+                    if dig < 10 {
+                        ddigits -= 3;
+                    } else if dig < 100 {
+                        ddigits -= 2;
+                    } else if dig < 1000 {
+                        ddigits -= 1;
+                    }
+
+                    if ddigits > max_digits {
+                        return true;
+                    }
+
+                    break;
+                }
+
+                ddigits -= DEC_DIGITS as i32;
+            }
+        }
+
+        false
+    }
 }
 
 /// Reads a `NumericDigit` from `&[u8]`.
@@ -2732,6 +2785,106 @@ impl fmt::UpperExp for NumericVar {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         let rscale = self.select_sci_scale();
         self.write_sci(f, rscale, false)
+    }
+}
+
+/// Type modifier.
+///
+/// For numeric, `Typmod` is composed by `precision` and `scale`.
+/// They are converted into a internal integer value.
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct Typmod(i32);
+
+impl Typmod {
+    /// Creates a `Typmod`.
+    ///
+    /// Callers have to guarantee that:
+    /// * `1 <= precision <= NUMERIC_MAX_PRECISION`
+    /// * `0 <= scale <= precision`
+    #[inline]
+    pub unsafe fn new_unchecked(precision: i32, scale: i32) -> Self {
+        debug_assert!(precision >= 1 && precision <= NUMERIC_MAX_PRECISION);
+        debug_assert!(scale >= 0 && scale <= precision);
+
+        Typmod(((precision << 16) | scale) + VAR_HEADER_SIZE)
+    }
+
+    /// Creates a `Typmod`.
+    /// `scale` defaults to zero.
+    ///
+    /// Callers have to guarantee that:
+    /// * `1 <= precision <= NUMERIC_MAX_PRECISION`
+    #[inline]
+    pub unsafe fn with_precision_unchecked(precision: i32) -> Self {
+        debug_assert!(precision >= 1 && precision <= NUMERIC_MAX_PRECISION);
+
+        Typmod((precision << 16) + VAR_HEADER_SIZE)
+    }
+
+    /// Creates a `Typmod`.
+    ///
+    /// Returns `None`:
+    /// * if `1 <= precision <= NUMERIC_MAX_PRECISION`
+    /// * if `0 <= scale <= precision`
+    #[inline]
+    pub fn new(precision: i32, scale: i32) -> Option<Self> {
+        if precision < 1 || precision > NUMERIC_MAX_PRECISION {
+            None
+        } else if scale < 0 || scale > precision {
+            None
+        } else {
+            Some(unsafe { Self::new_unchecked(precision, scale) })
+        }
+    }
+
+    /// Creates a `Typmod`.
+    /// `scale` defaults to zero.
+    ///
+    /// Returns `None`:
+    /// * if `1 <= precision <= NUMERIC_MAX_PRECISION`
+    #[inline]
+    pub fn with_precision(precision: i32) -> Option<Self> {
+        if precision < 1 || precision > NUMERIC_MAX_PRECISION {
+            None
+        } else {
+            Some(unsafe { Self::with_precision_unchecked(precision) })
+        }
+    }
+
+    /// Creates a `Typmod` from a `Typmod`'s value.
+    ///
+    /// Callers have to guarantee that the `value` is valid.
+    #[inline]
+    pub unsafe fn from_value_unchecked(value: i32) -> Self {
+        Typmod(value)
+    }
+
+    /// Returns `Typmod`'s value in `i32`.
+    #[inline]
+    pub const fn value(self) -> i32 {
+        self.0
+    }
+
+    /// Extracts `(precision, scale)` from `Typmod`.
+    #[inline]
+    pub const fn extract(self) -> (i32, i32) {
+        let t = self.0 - VAR_HEADER_SIZE;
+        ((t >> 16) & 0xFFFF, t & 0xFFFF)
+    }
+}
+
+impl Default for Typmod {
+    #[inline]
+    fn default() -> Self {
+        Typmod(-1)
+    }
+}
+
+impl fmt::Display for Typmod {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        let (precision, scale) = self.extract();
+        write!(f, "({}, {})", precision, scale)
     }
 }
 
@@ -3378,5 +3531,129 @@ mod tests {
         assert_fac(101, Some("9425947759838359420851623124482936749562312794702543768327889353416977599316221476503087861591808346911623490003549599583369706302603264000000000000000000000000"));
         assert_fac(1001, Some("402789647337170867317246136356926989705094239074925347176343710340368450911027649612636252695456374205280468598807393254690298539867803367460225153499614535588421928591160833678742451354915921252299285456946271396995850437959540645019696372741142787347450281325324373824456300226871609431497826989489109522725791691167945698509282421538632966523376679891823696900982075223188279465194065489111498586522997573307838057934994706212934291477882221464914058745808179795130018969175605739824237247684512790169648013778158661520384916357285547219660337504067910087936301580874662367543921288988208261944834178369169805682489420504038334529389177845089679546075023305854006141256288633820079940395329251563788399404652902154519302928365169452383531030755684578503851488154092323576150311569325891190105926118761607100286827930472944913272420825078912158741589850136017030887975452922434889688775883386977825215904423682478943313806072144097432418695807412571292308739802481089407002523955080148184062810447564594783139830113821372260474145316521647368313934670783858482781506915288378941348078689691815657785305896912277993200639858696294199549107738635599538328374931258525869323348477334798827676297868823693023377418942304272267800509765805435653787530370118261219994752588866451072715583785495394684524593296728611334955079882857173250037068541860372512693170819259309411027837176612444692649174536429745421086287708588130082168792750697158901737130221751430550976429258055277255676893874108456870904122902259417224707137723406125811549952159629766771063079472679280213882978523785424760309678138268708239764925768714349554665438389311198715040908077757086900159389712443987670244241787904585093011546861502058550090914877900852701619648229332192401075747543562989953271508977501771085759521631427816116191761031257454497039673414248149210836002497114107565960458576525212556159634975715552638678172137468172843066451093984443636560722213668172225585711566558134467392654185460222589723312097599987253417831473939565071006344352518096564427781204200068323913056897090916602712260306869786107237077572445866572945760977721639408338430009976028970539150822336553856613962747814621747092348996915755983464741082000337526945990059365493439921937093368896754791416759604324895514660325913157843796039917819613717350380997781225472000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"));
         assert_fac(32178, None);
+    }
+
+    #[test]
+    fn typmod() {
+        let t = Typmod::new(10, 5).unwrap();
+        assert_eq!(t.value(), 655369);
+        assert_eq!(
+            unsafe { Typmod::from_value_unchecked(655369) }.extract(),
+            (10, 5)
+        );
+        assert_eq!(t.extract(), (10, 5));
+        assert_eq!(t.to_string(), "(10, 5)");
+
+        let t = Typmod::with_precision(10).unwrap();
+        assert_eq!(t.value(), 655364);
+        assert_eq!(
+            unsafe { Typmod::from_value_unchecked(655364) }.extract(),
+            (10, 0)
+        );
+        assert_eq!(t.extract(), (10, 0));
+        assert_eq!(t.to_string(), "(10, 0)");
+
+        assert_eq!(Typmod::new(0, 0), None);
+        assert_eq!(Typmod::new(NUMERIC_MAX_PRECISION + 1, 0), None);
+        assert_eq!(Typmod::new(10, -1), None);
+        assert_eq!(Typmod::new(10, 11), None);
+        assert_eq!(Typmod::with_precision(0), None);
+        assert_eq!(Typmod::with_precision(NUMERIC_MAX_PRECISION + 1), None);
+    }
+
+    fn assert_apply_typmod(val: &str, typmod: Typmod, overflow: bool, expected: &str) {
+        let mut val = val.parse::<NumericVar>().unwrap();
+        let of = val.apply_typmod(typmod);
+        assert_eq!(of, overflow);
+        if !of {
+            assert_eq!(val.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn apply_typmod() {
+        assert_apply_typmod(
+            "123456789.123456789",
+            Typmod::new(20, 0).unwrap(),
+            false,
+            "123456789",
+        );
+
+        assert_apply_typmod(
+            "123456789.123456789",
+            Typmod::new(20, 5).unwrap(),
+            false,
+            "123456789.12346",
+        );
+
+        assert_apply_typmod(
+            "123456789.123456789",
+            Typmod::new(20, 10).unwrap(),
+            false,
+            "123456789.1234567890",
+        );
+
+        assert_apply_typmod(
+            "123456789.123456789",
+            Typmod::new(15, 0).unwrap(),
+            false,
+            "123456789",
+        );
+
+        assert_apply_typmod(
+            "123456789.123456789",
+            Typmod::new(15, 6).unwrap(),
+            false,
+            "123456789.123457",
+        );
+
+        assert_apply_typmod(
+            "123456789.123456789",
+            Typmod::new(15, 7).unwrap(),
+            true,
+            "overflow",
+        );
+
+        assert_apply_typmod(
+            "123456789.123456789",
+            Typmod::new(10, 0).unwrap(),
+            false,
+            "123456789",
+        );
+
+        assert_apply_typmod(
+            "123456789.123456789",
+            Typmod::new(10, 1).unwrap(),
+            false,
+            "123456789.1",
+        );
+
+        assert_apply_typmod(
+            "123456789.123456789",
+            Typmod::new(10, 2).unwrap(),
+            true,
+            "overflow",
+        );
+
+        assert_apply_typmod(
+            "123456789.123456789",
+            Typmod::new(9, 0).unwrap(),
+            false,
+            "123456789",
+        );
+
+        assert_apply_typmod(
+            "123456789.123456789",
+            Typmod::new(9, 1).unwrap(),
+            true,
+            "overflow",
+        );
+
+        assert_apply_typmod(
+            "123456789.123456789",
+            Typmod::new(8, 0).unwrap(),
+            true,
+            "overflow",
+        );
     }
 }
