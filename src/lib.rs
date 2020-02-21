@@ -2362,6 +2362,35 @@ impl NumericVar {
         }
     }
 
+    /// Returns a numeric that represents the sign of self.
+    /// * -1 if `self` is less than 0
+    /// * 0 if `self` is equal to 0
+    /// * 1 if `self` is greater than zero
+    /// * `NaN` if `self` is `NaN`
+    #[inline]
+    pub fn signum(&self) -> Self {
+        if self.is_nan() {
+            Self::nan()
+        } else if self.ndigits == 0 {
+            Self::zero()
+        } else {
+            let mut result = ONE.clone();
+            result.sign = self.sign;
+            result
+        }
+    }
+
+    /// Increment `self` by one.
+    #[inline]
+    pub fn inc(&self) -> Self {
+        if self.is_nan() {
+            return Self::nan();
+        }
+
+        // Compute the result and return it
+        self.add_common(&ONE)
+    }
+
     /// Checked numeric division.
     /// Computes `self / other`, returning `None` if `other == 0`.
     #[inline]
@@ -2374,6 +2403,19 @@ impl NumericVar {
         // Select scale for division result
         let rscale = self.select_div_scale(other);
         NumericVar::div_common(self, other, rscale, true)
+    }
+
+    /// Computes `self / other`, truncating the result to an integer.
+    ///
+    /// Returns `None` if `other == 0`.
+    #[inline]
+    pub fn checked_div_trunc(&self, other: &Self) -> Option<Self> {
+        // Handle NaN
+        if self.is_nan() || other.is_nan() {
+            return Some(NumericVar::nan());
+        }
+
+        NumericVar::div_common(self, other, 0, false)
     }
 
     /// Round a value to have `scale` digits after the decimal point.
@@ -2696,6 +2738,64 @@ impl fmt::UpperExp for NumericVar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_signum(val: &str, expected: &str) {
+        let val = val.parse::<NumericVar>().unwrap();
+        let result = val.signum();
+        assert_eq!(result.to_string(), expected);
+    }
+
+    #[test]
+    fn signum() {
+        assert_signum("NaN", "NaN");
+        assert_signum("0", "0");
+        assert_signum("31", "1");
+        assert_signum("-47", "-1");
+    }
+
+    fn assert_inc(val: &str, expected: &str) {
+        let val = val.parse::<NumericVar>().unwrap();
+        let result = val.inc();
+        assert_eq!(result.to_string(), expected);
+    }
+
+    #[test]
+    fn inc() {
+        assert_inc("NaN", "NaN");
+        assert_inc("-1", "0");
+        assert_inc("0", "1");
+        assert_inc("1", "2");
+        assert_inc(
+            "170141183460469231731687303715884105727",
+            "170141183460469231731687303715884105728",
+        );
+        assert_inc(
+            "-170141183460469231731687303715884105727",
+            "-170141183460469231731687303715884105726",
+        );
+        assert_inc("1.00001", "2.00001");
+    }
+
+    fn assert_checked_div_trunc(val: &str, other: &str, expected: Option<&str>) {
+        let val = val.parse::<NumericVar>().unwrap();
+        let other = other.parse::<NumericVar>().unwrap();
+
+        let result = val.checked_div_trunc(&other).map(|n| n.to_string());
+        let expected = expected.map(|s| s.to_owned());
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn checked_div_trunc() {
+        assert_checked_div_trunc("NaN", "1", Some("NaN"));
+        assert_checked_div_trunc("1", "NaN", Some("NaN"));
+        assert_checked_div_trunc("1", "0", None);
+        assert_checked_div_trunc("10.00000", "2", Some("5"));
+        assert_checked_div_trunc("10.00001", "2", Some("5"));
+        assert_checked_div_trunc("10.00000", "3", Some("3"));
+        assert_checked_div_trunc("10.00001", "3", Some("3"));
+    }
 
     fn assert_round(val: &str, rscale: i32, expected: &str) {
         let mut numeric = val.parse::<NumericVar>().unwrap();
