@@ -2591,12 +2591,11 @@ impl NumericVar {
 
     /// Raise e to the power of `self` (`e^(self)`).
     ///
-    /// # Panics
-    /// Panics if overflows.
+    /// Returns `None` if overflows.
     #[inline]
-    pub fn exp(&self) -> Self {
+    pub fn exp(&self) -> Option<Self> {
         if self.is_nan() {
-            return Self::nan();
+            return Some(Self::nan());
         }
 
         // Determine the result scale.  We choose a scale
@@ -2620,37 +2619,34 @@ impl NumericVar {
             .min(NUMERIC_MAX_DISPLAY_SCALE);
 
         // Let exp_common() do the calculation and return the result.
-        let result = self
-            .exp_common(rscale)
-            .expect("value overflows numeric format");
-
-        result
+        self.exp_common(rscale)
     }
 
     /// Raise `self` to the power of `exp`.
     ///
+    /// Returns `None` if overflows.
+    ///
     /// # Panics
-    /// - if overflows
-    /// - if arguments are invalid.
+    /// if arguments are invalid:
     ///   - `self` is zero and `exp` is less than zero
     ///   - `self` is less than zero and `exp` is not a integer.
     #[inline]
-    pub fn pow(&self, exp: &NumericVar) -> Self {
+    pub fn pow(&self, exp: &NumericVar) -> Option<Self> {
         // Handle NaN cases.  We follow the POSIX spec for pow(3), which says that
         // NaN ^ 0 = 1, and 1 ^ NaN = 1, while all other cases with NaN inputs
         // yield NaN (with no error).
         if self.is_nan() {
             if !exp.is_nan() {
                 if exp.cmp_common(&Self::zero()) == 0 {
-                    return ONE.clone();
+                    return Some(ONE.clone());
                 }
             }
-            return Self::nan();
+            return Some(Self::nan());
         } else if exp.is_nan() {
             if self.cmp_common(&ONE) == 0 {
-                return ONE.clone();
+                return Some(ONE.clone());
             }
-            return Self::nan();
+            return Some(Self::nan());
         }
 
         if self.cmp_common(&Self::zero()) == 0 && exp.cmp_common(&Self::zero()) < 0 {
@@ -2666,11 +2662,7 @@ impl NumericVar {
 
         // Call power_common() to compute and return the result; note it handles
         // scale selection itself.
-        let result = self
-            .power_common(exp)
-            .expect("value overflows numeric format");
-
-        result
+        self.power_common(exp)
     }
 
     /// Compute factorial.
@@ -3373,7 +3365,7 @@ mod tests {
 
     fn assert_exp(val: &str, expected: &str) {
         let var = val.parse::<NumericVar>().unwrap();
-        let ln = var.exp();
+        let ln = var.exp().expect("value overflows numeric format");
         assert_eq!(ln.to_string(), expected);
     }
 
@@ -3430,7 +3422,7 @@ mod tests {
     fn assert_pow(base: &str, exp: &str, expected: &str) {
         let base = base.parse::<NumericVar>().unwrap();
         let exp = exp.parse::<NumericVar>().unwrap();
-        let pow = base.pow(&exp);
+        let pow = base.pow(&exp).expect("value overflows numeric format");
         assert_eq!(pow.to_string(), expected);
     }
 
