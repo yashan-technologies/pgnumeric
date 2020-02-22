@@ -624,9 +624,7 @@ impl TryFrom<NumericVar> for f32 {
 
     #[inline]
     fn try_from(value: NumericVar) -> Result<Self, Self::Error> {
-        let s = value.to_string();
-        let f = s.parse::<f32>()?;
-        Ok(f)
+        TryFrom::try_from(&value)
     }
 }
 
@@ -635,6 +633,26 @@ impl TryFrom<NumericVar> for f64 {
 
     #[inline]
     fn try_from(value: NumericVar) -> Result<Self, Self::Error> {
+        TryFrom::try_from(&value)
+    }
+}
+
+impl TryFrom<&NumericVar> for f32 {
+    type Error = NumericTryFromError;
+
+    #[inline]
+    fn try_from(value: &NumericVar) -> Result<Self, Self::Error> {
+        let s = value.to_string();
+        let f = s.parse::<f32>()?;
+        Ok(f)
+    }
+}
+
+impl TryFrom<&NumericVar> for f64 {
+    type Error = NumericTryFromError;
+
+    #[inline]
+    fn try_from(value: &NumericVar) -> Result<Self, Self::Error> {
         let s = value.to_string();
         let f = s.parse::<f64>()?;
         Ok(f)
@@ -666,8 +684,6 @@ impl_try_from_numeric_ref!(u16);
 impl_try_from_numeric_ref!(u32);
 impl_try_from_numeric_ref!(u64);
 impl_try_from_numeric_ref!(u128);
-impl_try_from_numeric_ref!(f32);
-impl_try_from_numeric_ref!(f64);
 impl_try_from_numeric_ref!(isize);
 impl_try_from_numeric_ref!(usize);
 
