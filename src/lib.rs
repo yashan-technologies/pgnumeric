@@ -34,7 +34,7 @@ const NUMERIC_MIN_SIG_DIGITS: i32 = 16;
 
 const NBASE: i32 = 10000;
 const HALF_NBASE: NumericDigit = 5000;
-const DEC_DIGITS: usize = 4;
+const DEC_DIGITS: i32 = 4;
 const MUL_GUARD_DIGITS: i32 = 2;
 const DIV_GUARD_DIGITS: i32 = 4;
 
@@ -215,7 +215,7 @@ impl NumericVar {
         debug_assert!(self.offset > 0 || self.ndigits == 0);
 
         // decimal digits wanted
-        let di = (self.weight + 1) * DEC_DIGITS as i32 + rscale;
+        let di = (self.weight + 1) * DEC_DIGITS + rscale;
 
         // If di = 0, the value loses all digits, but could round up to 1 if its
         // first extra digit is >= 5.  If di < 0 the result must be 0.
@@ -225,9 +225,9 @@ impl NumericVar {
             self.sign = NUMERIC_POS;
         } else {
             // NBASE digits wanted
-            let mut ndigits = (di + DEC_DIGITS as i32 - 1) / DEC_DIGITS as i32;
+            let mut ndigits = (di + DEC_DIGITS - 1) / DEC_DIGITS;
             // 0, or number of decimal digits to keep in last NBASE digit
-            let di = di % DEC_DIGITS as i32;
+            let di = di % DEC_DIGITS;
 
             if ndigits < self.ndigits || (ndigits == self.ndigits && di > 0) {
                 self.ndigits = ndigits;
@@ -297,7 +297,7 @@ impl NumericVar {
         debug_assert!(!self.is_nan());
 
         // decimal digits wanted
-        let di = (self.weight + 1) * DEC_DIGITS as i32 + rscale;
+        let di = (self.weight + 1) * DEC_DIGITS + rscale;
 
         // If di <= 0, the value loses all digits.
         if di <= 0 {
@@ -306,13 +306,13 @@ impl NumericVar {
             self.sign = NUMERIC_POS;
         } else {
             // NBASE digits wanted
-            let mut ndigits = (di + DEC_DIGITS as i32 - 1) / DEC_DIGITS as i32;
+            let mut ndigits = (di + DEC_DIGITS - 1) / DEC_DIGITS;
 
             if ndigits <= self.ndigits {
                 self.ndigits = ndigits;
 
                 // 0, or number of decimal digits to keep in last NBASE digit
-                let di = di % DEC_DIGITS as i32;
+                let di = di % DEC_DIGITS;
 
                 if di > 0 {
                     let digits = &mut self.buf.as_mut_slice()[self.offset..];
@@ -448,23 +448,22 @@ impl NumericVar {
         };
 
         let weight = if dec_weight >= 0 {
-            (dec_weight + 1 + DEC_DIGITS as i32 - 1) / DEC_DIGITS as i32 - 1
+            (dec_weight + 1 + DEC_DIGITS - 1) / DEC_DIGITS - 1
         } else {
-            -((-dec_weight - 1) / DEC_DIGITS as i32 + 1)
+            -((-dec_weight - 1) / DEC_DIGITS + 1)
         };
-        let offset = (weight + 1) * DEC_DIGITS as i32 - (dec_weight + 1);
-        let ndigits =
-            (integral.len() as i32 + fractional.len() as i32 + offset + DEC_DIGITS as i32 - 1)
-                / DEC_DIGITS as i32;
+        let offset = (weight + 1) * DEC_DIGITS - (dec_weight + 1);
+        let ndigits = (integral.len() as i32 + fractional.len() as i32 + offset + DEC_DIGITS - 1)
+            / DEC_DIGITS;
 
         let mut dec_digits: Vec<u8> =
-            Vec::with_capacity(integral.len() + fractional.len() + DEC_DIGITS * 2);
+            Vec::with_capacity(integral.len() + fractional.len() + DEC_DIGITS as usize * 2);
         // leading padding for digit alignment later
-        dec_digits.extend_from_slice([0; DEC_DIGITS].as_ref());
+        dec_digits.extend_from_slice([0; DEC_DIGITS as usize].as_ref());
         dec_digits.extend(integral.iter().map(|&i| i - b'0'));
         dec_digits.extend(fractional.iter().map(|&i| i - b'0'));
         // trailing padding for digit alignment later
-        dec_digits.extend_from_slice([0; DEC_DIGITS].as_ref());
+        dec_digits.extend_from_slice([0; DEC_DIGITS as usize].as_ref());
 
         self.alloc_buf(ndigits);
         self.sign = sign as i32;
@@ -475,8 +474,8 @@ impl NumericVar {
         let digits = self.digits_mut();
         debug_assert_eq!(ndigits as usize, digits.len());
 
-        let iter = (&dec_digits[DEC_DIGITS - offset as usize..])
-            .chunks_exact(DEC_DIGITS)
+        let iter = (&dec_digits[(DEC_DIGITS - offset) as usize..])
+            .chunks_exact(DEC_DIGITS as usize)
             .take(ndigits as usize);
         for chunk in iter {
             let digit = read_numeric_digit(chunk);
@@ -518,7 +517,7 @@ impl NumericVar {
 
                 // In the first digit, suppress extra leading decimal zeroes.
                 if d > 0 {
-                    write!(f, "{:>0width$}", dig, width = DEC_DIGITS)?;
+                    write!(f, "{:>0width$}", dig, width = DEC_DIGITS as usize)?;
                 } else {
                     write!(f, "{}", dig)?;
                 }
@@ -534,19 +533,19 @@ impl NumericVar {
 
             let mut d = self.weight + 1;
 
-            for scale in (0..self.dscale).step_by(DEC_DIGITS) {
+            for scale in (0..self.dscale).step_by(DEC_DIGITS as usize) {
                 let dig = if d >= 0 && d < self.ndigits {
                     digits[d as usize]
                 } else {
                     0
                 };
 
-                if scale + DEC_DIGITS as i32 <= self.dscale {
-                    write!(f, "{:>0width$}", dig, width = DEC_DIGITS)?;
+                if scale + DEC_DIGITS <= self.dscale {
+                    write!(f, "{:>0width$}", dig, width = DEC_DIGITS as usize)?;
                 } else {
                     // truncate the last digit
                     let width = (self.dscale - scale) as usize;
-                    let dig = (0..DEC_DIGITS - width).fold(dig, |acc, _| acc / 10);
+                    let dig = (0..DEC_DIGITS as usize - width).fold(dig, |acc, _| acc / 10);
                     write!(f, "{:>0width$}", dig, width = width)?;
                 }
 
@@ -591,10 +590,10 @@ impl NumericVar {
         // This is the exponent required to represent the number with only one
         // significant digit before the decimal place.
         let exponent = if self.ndigits > 0 {
-            let mut exp = (self.weight + 1) * DEC_DIGITS as i32;
+            let mut exp = (self.weight + 1) * DEC_DIGITS;
             // Compensate for leading decimal zeroes in the first numeric digit by
             // decrementing the exponent.
-            exp -= DEC_DIGITS as i32 - (self.digits()[0] as f64).log10() as i32;
+            exp -= DEC_DIGITS - (self.digits()[0] as f64).log10() as i32;
             exp
         } else {
             // If has no digits, then it must be zero.
@@ -689,9 +688,9 @@ impl NumericVar {
         let (_, rzero) = count_zeros(rdigit);
 
         let front = n + zero;
-        let end = DEC_DIGITS as i32 - rzero;
+        let end = DEC_DIGITS - rzero;
 
-        let result = front + end + (ri - i - 1) as i32 * DEC_DIGITS as i32 - 1;
+        let result = front + end + (ri - i - 1) as i32 * DEC_DIGITS - 1;
 
         result
     }
@@ -1111,10 +1110,8 @@ impl NumericVar {
         // rscale-driven rounding produces a carry out of the highest exact digit.
         let res_ndigits = {
             let ndigits = var1.ndigits + var2.ndigits + 1;
-            let max_digits = res_weight
-                + 1
-                + (rscale + DEC_DIGITS as i32 - 1) / DEC_DIGITS as i32
-                + MUL_GUARD_DIGITS;
+            let max_digits =
+                res_weight + 1 + (rscale + DEC_DIGITS - 1) / DEC_DIGITS + MUL_GUARD_DIGITS;
             std::cmp::min(ndigits, max_digits)
         };
 
@@ -1264,7 +1261,7 @@ impl NumericVar {
         };
 
         // Select result scale
-        let mut rscale = NUMERIC_MIN_SIG_DIGITS - qweight * DEC_DIGITS as i32;
+        let mut rscale = NUMERIC_MIN_SIG_DIGITS - qweight * DEC_DIGITS;
         rscale = std::cmp::max(rscale, self.dscale);
         rscale = std::cmp::max(rscale, other.dscale);
         rscale = std::cmp::max(rscale, NUMERIC_MIN_DISPLAY_SCALE);
@@ -1309,7 +1306,7 @@ impl NumericVar {
         let res_weight = self.weight - other.weight;
         let res_ndigits = {
             // The number of accurate result digits we need to produce
-            let mut ndigits = res_weight + 1 + (rscale + DEC_DIGITS as i32 - 1) / DEC_DIGITS as i32;
+            let mut ndigits = res_weight + 1 + (rscale + DEC_DIGITS - 1) / DEC_DIGITS;
             // ... but always at least 1
             ndigits = std::cmp::max(ndigits, 1);
             // If rounding needed, figure one more digit to ensure correct result
@@ -1539,7 +1536,7 @@ impl NumericVar {
         let res_weight = self.weight - other.weight + 1;
         let div_ndigits = {
             // The number of accurate result digits we need to produce
-            let mut ndigits = res_weight + 1 + (rscale + DEC_DIGITS as i32 - 1) / DEC_DIGITS as i32;
+            let mut ndigits = res_weight + 1 + (rscale + DEC_DIGITS - 1) / DEC_DIGITS;
             // Add guard digits for roundoff error
             ndigits += DIV_GUARD_DIGITS;
             if ndigits < DIV_GUARD_DIGITS {
@@ -1909,15 +1906,15 @@ impl NumericVar {
         // many significant digits are needed.
         let digits = self.digits();
         let mut f = digits[0] as f64;
-        let mut p = self.weight * DEC_DIGITS as i32;
+        let mut p = self.weight * DEC_DIGITS;
 
         for i in 1..self.ndigits as usize {
-            if i * DEC_DIGITS < 16 {
+            if (i * DEC_DIGITS as usize) < 16 {
                 break;
             }
 
             f = f * NBASE as f64 + digits[i] as f64;
-            p -= DEC_DIGITS as i32;
+            p -= DEC_DIGITS;
         }
 
         // We have base ~= f * 10^p
@@ -1964,15 +1961,14 @@ impl NumericVar {
             // Do the multiplications using rscales large enough to hold the
             // results to the required number of significant digits, but don't
             // waste time by exceeding the scales of the numbers themselves.
-            let local_rscale = (sig_digits - 2 * base_prod.weight * DEC_DIGITS as i32)
+            let local_rscale = (sig_digits - 2 * base_prod.weight * DEC_DIGITS)
                 .min(2 * base_prod.dscale)
                 .max(NUMERIC_MIN_DISPLAY_SCALE);
 
             base_prod = base_prod.mul_common(&base_prod, local_rscale);
 
             if mask & 1 != 0 {
-                let local_rscale = (sig_digits
-                    - (base_prod.weight + result.weight) * DEC_DIGITS as i32)
+                let local_rscale = (sig_digits - (base_prod.weight + result.weight) * DEC_DIGITS)
                     .min(base_prod.dscale + result.dscale)
                     .max(NUMERIC_MIN_DISPLAY_SCALE);
 
@@ -2024,13 +2020,13 @@ impl NumericVar {
         // rscale as we work so that we keep this many significant digits at each
         // step (plus a few more for good measure).
         while x.cmp_common(&ZERO_POINT_NINE) <= 0 {
-            let mut local_rscale = rscale - x.weight * DEC_DIGITS as i32 / 2 + 8;
+            let mut local_rscale = rscale - x.weight * DEC_DIGITS / 2 + 8;
             local_rscale = local_rscale.max(NUMERIC_MIN_DISPLAY_SCALE);
             x = x.sqrt_common(local_rscale);
             fact = fact.mul_common(&TWO, 0);
         }
         while x.cmp_common(&ONE_POINT_ONE) >= 0 {
-            let mut local_rscale = rscale - x.weight * DEC_DIGITS as i32 / 2 + 8;
+            let mut local_rscale = rscale - x.weight * DEC_DIGITS / 2 + 8;
             local_rscale = local_rscale.max(NUMERIC_MIN_DISPLAY_SCALE);
             x = x.sqrt_common(local_rscale);
             fact = fact.mul_common(&TWO, 0);
@@ -2070,7 +2066,7 @@ impl NumericVar {
 
             result = result.add_common(&elem);
 
-            if elem.weight < (result.weight - local_rscale * 2 / DEC_DIGITS as i32) {
+            if elem.weight < (result.weight - local_rscale * 2 / DEC_DIGITS) {
                 break;
             }
         }
@@ -2206,7 +2202,7 @@ impl NumericVar {
         // result doubles with each multiplication, we can reduce the local rscale
         // as we proceed.
         for _ in 1..=ndiv2 {
-            let mut local_rscale = sig_digits - result.weight * 2 * DEC_DIGITS as i32;
+            let mut local_rscale = sig_digits - result.weight * 2 * DEC_DIGITS;
             local_rscale = local_rscale.max(NUMERIC_MIN_DISPLAY_SCALE);
             result = result.mul_common(&result, local_rscale);
         }
@@ -2235,7 +2231,7 @@ impl NumericVar {
             let x = self.sub_common(&ONE);
             if x.ndigits > 0 {
                 // Use weight of most significant decimal digit of x
-                ln_dweight = x.weight * DEC_DIGITS as i32 + (x.digits()[0] as f64).log10() as i32;
+                ln_dweight = x.weight * DEC_DIGITS + (x.digits()[0] as f64).log10() as i32;
             } else {
                 // x = 0.  Since ln(1) = 0 exactly, we don't need extra digits
                 ln_dweight = 0;
@@ -2248,11 +2244,11 @@ impl NumericVar {
                 let d = self.digits();
 
                 let mut digits = d[0] as i32;
-                let mut dweight = self.weight * DEC_DIGITS as i32;
+                let mut dweight = self.weight * DEC_DIGITS;
 
                 if self.ndigits > 1 {
                     digits = digits * NBASE + d[1] as i32;
-                    dweight -= DEC_DIGITS as i32;
+                    dweight -= DEC_DIGITS;
                 }
 
                 // We have self ~= digits * 10^dweight
@@ -2514,7 +2510,7 @@ impl NumericVar {
         // but in any case not less than the input's dscale.
 
         // Assume the input was normalized, so arg.weight is accurate
-        let sweight = (self.weight + 1) * DEC_DIGITS as i32 / 2 - 1;
+        let sweight = (self.weight + 1) * DEC_DIGITS / 2 - 1;
 
         let rscale = (NUMERIC_MIN_SIG_DIGITS - sweight)
             .max(self.dscale)
@@ -2723,7 +2719,7 @@ impl NumericVar {
         // be inflated by leading zeroes, which will be stripped before storage
         // but perhaps might not have been yet. In any case, we must recognize a
         // true zero, whose weight doesn't mean anything.
-        let mut ddigits = (self.weight + 1) * DEC_DIGITS as i32;
+        let mut ddigits = (self.weight + 1) * DEC_DIGITS;
         if ddigits > max_digits {
             // Determine true weight; and check for all-zero result
             for &dig in self.digits().iter() {
@@ -2745,7 +2741,7 @@ impl NumericVar {
                     break;
                 }
 
-                ddigits -= DEC_DIGITS as i32;
+                ddigits -= DEC_DIGITS;
             }
         }
 
@@ -2756,7 +2752,7 @@ impl NumericVar {
 /// Reads a `NumericDigit` from `&[u8]`.
 #[inline]
 fn read_numeric_digit(s: &[u8]) -> NumericDigit {
-    debug_assert!(s.len() <= DEC_DIGITS);
+    debug_assert!(s.len() <= DEC_DIGITS as usize);
 
     let mut digit = 0;
 
