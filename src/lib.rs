@@ -2739,6 +2739,39 @@ impl NumericVar {
 
         false
     }
+
+    /// Returns a normalized string, suppressing insignificant
+    /// trailing zeroes and then any trailing decimal point.
+    ///
+    /// The intent of this is to produce strings that are equal
+    /// if and only if the input numeric values compare equal.
+    pub fn normalize(&self) -> String {
+        if self.is_nan() {
+            return String::from("NaN");
+        }
+
+        let mut s = self.to_string();
+
+        // If there's no decimal point, there's certainly nothing to remove.
+        if let Some(_) = s.find('.') {
+            // Back up over trailing fractional zeroes.  Since there is a decimal
+            // point, this loop will terminate safely.
+            let mut new_len = s.len();
+            let bytes = s.as_bytes();
+            let count_zeros = bytes.iter().rev().take_while(|i| **i == b'0').count();
+            new_len -= count_zeros;
+
+            // We want to get rid of the decimal point too, if it's now last.
+            if bytes[new_len - 1] == b'.' {
+                new_len -= 1;
+            }
+
+            // Delete whatever we backed up over.
+            s.truncate(new_len);
+        }
+
+        s
+    }
 }
 
 /// Reads a `NumericDigit` from `&[u8]`.
@@ -3643,5 +3676,29 @@ mod tests {
             true,
             "overflow",
         );
+    }
+
+    fn assert_normalize(val: &str, expected: &str) {
+        let n = val.parse::<NumericVar>().unwrap();
+        assert_eq!(n.to_string(), val);
+        assert_eq!(n.normalize(), expected);
+    }
+
+    #[test]
+    fn normalize() {
+        assert_normalize("NaN", "NaN");
+        assert_normalize("0", "0");
+        assert_normalize("0.0", "0");
+        assert_normalize("0.00001", "0.00001");
+        assert_normalize("0.00001000", "0.00001");
+        assert_normalize("1.0", "1");
+        assert_normalize("1.00000", "1");
+        assert_normalize("1.000001", "1.000001");
+        assert_normalize("-1.0", "-1");
+        assert_normalize("-1.00000", "-1");
+        assert_normalize("-1.000001", "-1.000001");
+        assert_normalize("100000000", "100000000");
+        assert_normalize("100000000.00000000", "100000000");
+        assert_normalize("1234.5678", "1234.5678");
     }
 }
