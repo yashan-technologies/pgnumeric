@@ -15,6 +15,7 @@ use crate::parse::{parse_decimal, Decimal};
 use lazy_static::lazy_static;
 use std::convert::{TryFrom, TryInto};
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
 /// Limit on the precision (and hence scale) specifiable in a NUMERIC typmod.
 /// Note that the implementation limit on the length of a numeric value is
@@ -2909,6 +2910,58 @@ impl fmt::Display for Typmod {
     }
 }
 
+impl Hash for NumericVar {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // If it's NaN, don't try to hash the rest of the fields
+        if self.is_nan() {
+            return;
+        }
+
+        let mut weight = self.weight;
+        let mut start_offset = 0usize;
+
+        // Omit any leading or trailing zeros from the input to the hash. The
+        // numeric implementation *should* guarantee that leading and trailing
+        // zeros are suppressed, but we're paranoid. Note that we measure the
+        // starting and ending offsets in units of NumericDigits, not bytes.
+        let digits = self.digits();
+        digits.iter().take_while(|n| **n == 0).for_each(|_| {
+            start_offset += 1;
+
+            // The weight is effectively the # of digits before the decimal point,
+            // so decrement it for each leading zero we skip.
+            weight -= 1;
+        });
+
+        // If there are no non-zero digits, then the value of the number is zero,
+        // regardless of any other fields.
+        if self.ndigits == start_offset as i32 {
+            state.write_u8(0);
+            return;
+        }
+
+        let mut end_offset = 0usize;
+        digits
+            .iter()
+            .rev()
+            .take_while(|n| **n == 0)
+            .for_each(|_| end_offset += 1);
+
+        // If we get here, there should be at least one non-zero digit
+        debug_assert!(start_offset + end_offset < self.ndigits as usize);
+
+        // Note that we don't hash on the Numeric's scale, since two numerics can
+        // compare equal but have different scales.
+        &digits[start_offset..self.ndigits as usize - end_offset].hash(state);
+
+        // Mix in the weight
+        state.write_i32(weight);
+
+        // Mix in the sign
+        state.write_i8(if self.is_positive() { 1 } else { -1 });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3700,5 +3753,41 @@ mod tests {
         assert_normalize("100000000", "100000000");
         assert_normalize("100000000.00000000", "100000000");
         assert_normalize("1234.5678", "1234.5678");
+    }
+
+    fn assert_hash(val1: &str, val2: &str, eq: bool) {
+        use std::collections::hash_map::DefaultHasher;
+
+        let n1 = val1.parse::<NumericVar>().unwrap();
+        let n2 = val2.parse::<NumericVar>().unwrap();
+
+        let mut hasher1 = DefaultHasher::new();
+        let mut hasher2 = DefaultHasher::new();
+        n1.hash(&mut hasher1);
+        n2.hash(&mut hasher2);
+
+        if eq {
+            assert_eq!(n1, n2);
+            assert_eq!(hasher1.finish(), hasher2.finish());
+        } else {
+            assert_ne!(n1, n2);
+            assert_ne!(hasher1.finish(), hasher2.finish());
+        }
+    }
+
+    #[test]
+    fn hash() {
+        assert_hash("NaN", "NaN", true);
+        assert_hash("12340.00000", "12340", true);
+        assert_hash("10000000000.00000", "1e10", true);
+        assert_hash("1.234560e10", "0.123456e11", true);
+
+        assert_hash("NaN", "0", false);
+        assert_hash("1", "0", false);
+        assert_hash("1", "-1", false);
+        assert_hash("12", "21", false);
+        assert_hash("10002000", "20001000", false);
+        assert_hash("1000.2000", "2000.1000", false);
+        assert_hash("1.0002", "2.0001", false);
     }
 }
