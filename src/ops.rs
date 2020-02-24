@@ -13,6 +13,7 @@ use std::ops::{
 impl Add<&NumericVar> for &NumericVar {
     type Output = NumericVar;
 
+    #[allow(clippy::suspicious_arithmetic_impl)]
     #[inline]
     fn add(self, other: &NumericVar) -> Self::Output {
         if self.is_nan() || other.is_nan() {
@@ -76,6 +77,7 @@ impl AddAssign<NumericVar> for NumericVar {
 impl Sub<&NumericVar> for &NumericVar {
     type Output = NumericVar;
 
+    #[allow(clippy::suspicious_arithmetic_impl)]
     #[inline]
     fn sub(self, other: &NumericVar) -> Self::Output {
         if self.is_nan() || other.is_nan() {
@@ -139,6 +141,7 @@ impl SubAssign<NumericVar> for NumericVar {
 impl Mul<&NumericVar> for &NumericVar {
     type Output = NumericVar;
 
+    #[allow(clippy::suspicious_arithmetic_impl)]
     #[inline]
     fn mul(self, other: &NumericVar) -> Self::Output {
         if self.is_nan() || other.is_nan() {
@@ -376,12 +379,10 @@ impl Ord for NumericVar {
             Ordering::Less // non-NAN < NAN
         } else {
             let cmp = self.cmp_common(other);
-            if cmp > 0 {
-                Ordering::Greater
-            } else if cmp < 0 {
-                Ordering::Less
-            } else {
-                Ordering::Equal
+            match cmp {
+                _ if cmp > 0 => Ordering::Greater,
+                _ if cmp < 0 => Ordering::Less,
+                _ => Ordering::Equal,
             }
         }
     }

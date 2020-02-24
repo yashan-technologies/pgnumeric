@@ -471,17 +471,15 @@ impl NumericVar {
         self.weight = weight;
         self.dscale = dec_scale;
 
-        let mut i = 0;
         let digits = self.digits_mut();
         debug_assert_eq!(ndigits as usize, digits.len());
 
         let iter = (&dec_digits[(DEC_DIGITS - offset) as usize..])
             .chunks_exact(DEC_DIGITS as usize)
             .take(ndigits as usize);
-        for chunk in iter {
+        for (i, chunk) in iter.enumerate() {
             let digit = read_numeric_digit(chunk);
             digits[i] = digit;
-            i += 1;
         }
 
         // Strip any leading/trailing zeroes, and normalize weight if zero.
@@ -691,9 +689,7 @@ impl NumericVar {
         let front = n + zero;
         let end = DEC_DIGITS - rzero;
 
-        let result = front + end + (ri - i - 1) as i32 * DEC_DIGITS - 1;
-
-        result
+        front + end + (ri - i - 1) as i32 * DEC_DIGITS - 1
     }
 
     /// Add the absolute values of two variables into result.
@@ -707,14 +703,14 @@ impl NumericVar {
         let var1_digits = self.digits();
         let var2_digits = other.digits();
 
-        let res_weight = std::cmp::max(self.weight, other.weight) + 1;
-        let res_dscale = std::cmp::max(self.dscale, other.dscale);
+        let res_weight = self.weight.max(other.weight) + 1;
+        let res_dscale = self.dscale.max(other.dscale);
 
         // Note: here we are figuring rscale in base-NBASE digits
         let res_rscale = {
             let rscale1 = self.ndigits - self.weight - 1;
             let rscale2 = other.ndigits - other.weight - 1;
-            std::cmp::max(rscale1, rscale2)
+            rscale1.max(rscale2)
         };
 
         let res_ndigits = {
@@ -780,13 +776,13 @@ impl NumericVar {
         let var2_digits = other.digits();
 
         let res_weight = self.weight;
-        let res_dscale = std::cmp::max(self.dscale, other.dscale);
+        let res_dscale = self.dscale.max(other.dscale);
 
         // Note: here we are figuring rscale in base-NBASE digits
         let res_rscale = {
             let rscale1 = self.ndigits - self.weight - 1;
             let rscale2 = other.ndigits - other.weight - 1;
-            std::cmp::max(rscale1, rscale2)
+            rscale1.max(rscale2)
         };
 
         let res_ndigits = {
@@ -907,7 +903,7 @@ impl NumericVar {
             i2 += 1;
         }
 
-        return 0;
+        0
     }
 
     /// Full version of add functionality on variable level (handling signs).
@@ -922,66 +918,64 @@ impl NumericVar {
                 // result = +(ABS(self) + ABS(other))
                 let mut result = self.add_abs(other);
                 result.sign = NUMERIC_POS;
-                return result;
+                result
             } else {
                 let cmp = self.cmp_abs(other);
                 match cmp {
                     0 => {
                         // ABS(self) == ABS(other)
                         // result = ZERO
-                        return Self::scaled_zero(self.dscale.max(other.dscale));
+                        Self::scaled_zero(self.dscale.max(other.dscale))
                     }
                     1 => {
                         // ABS(self) > ABS(other)
                         // result = +(ABS(self) - ABS(other))
                         let mut result = self.sub_abs(other);
                         result.sign = NUMERIC_POS;
-                        return result;
+                        result
                     }
                     -1 => {
                         // ABS(self) < ABS(other)
                         // result = -(ABS(other) - ABS(self))
                         let mut result = other.sub_abs(self);
                         result.sign = NUMERIC_NEG;
-                        return result;
+                        result
                     }
                     _ => panic!("invalid comparison result"),
                 }
+            }
+        } else if other.is_positive() {
+            // self is negative, other is positive
+            // Must compare absolute values
+            let cmp = self.cmp_abs(other);
+            match cmp {
+                0 => {
+                    // ABS(self) == ABS(other)
+                    // result = ZERO
+                    Self::scaled_zero(self.dscale.max(other.dscale))
+                }
+                1 => {
+                    // ABS(self) > ABS(other)
+                    // result = -(ABS(self) - ABS(other))
+                    let mut result = self.sub_abs(other);
+                    result.sign = NUMERIC_NEG;
+                    result
+                }
+                -1 => {
+                    // ABS(self) < ABS(other)
+                    // result = +(ABS(other) - ABS(self))
+                    let mut result = other.sub_abs(self);
+                    result.sign = NUMERIC_POS;
+                    result
+                }
+                _ => panic!("invalid comparison result"),
             }
         } else {
-            if other.is_positive() {
-                // self is negative, other is positive
-                // Must compare absolute values
-                let cmp = self.cmp_abs(other);
-                match cmp {
-                    0 => {
-                        // ABS(self) == ABS(other)
-                        // result = ZERO
-                        return Self::scaled_zero(self.dscale.max(other.dscale));
-                    }
-                    1 => {
-                        // ABS(self) > ABS(other)
-                        // result = -(ABS(self) - ABS(other))
-                        let mut result = self.sub_abs(other);
-                        result.sign = NUMERIC_NEG;
-                        return result;
-                    }
-                    -1 => {
-                        // ABS(self) < ABS(other)
-                        // result = +(ABS(other) - ABS(self))
-                        let mut result = other.sub_abs(self);
-                        result.sign = NUMERIC_POS;
-                        return result;
-                    }
-                    _ => panic!("invalid comparison result"),
-                }
-            } else {
-                // Both are negative
-                // result = -(ABS(self) + ABS(other))
-                let mut result = self.add_abs(other);
-                result.sign = NUMERIC_NEG;
-                return result;
-            }
+            // Both are negative
+            // result = -(ABS(self) + ABS(other))
+            let mut result = self.add_abs(other);
+            result.sign = NUMERIC_NEG;
+            result
         }
     }
 
@@ -997,7 +991,7 @@ impl NumericVar {
                 // result = +(ABS(self) + ABS(other))
                 let mut result = self.add_abs(other);
                 result.sign = NUMERIC_POS;
-                return result;
+                result
             } else {
                 // Both are positive
                 // Must compare absolute values
@@ -1006,59 +1000,57 @@ impl NumericVar {
                     0 => {
                         // ABS(self) == ABS(other)
                         // result = ZERO
-                        return Self::scaled_zero(self.dscale.max(other.dscale));
+                        Self::scaled_zero(self.dscale.max(other.dscale))
                     }
                     1 => {
                         // ABS(self) > ABS(other)
                         // result = +(ABS(self) - ABS(other))
                         let mut result = self.sub_abs(other);
                         result.sign = NUMERIC_POS;
-                        return result;
+                        result
                     }
                     -1 => {
                         // ABS(self) < ABS(other)
                         // result = -(ABS(other) - ABS(self))
                         let mut result = other.sub_abs(self);
                         result.sign = NUMERIC_NEG;
-                        return result;
+                        result
                     }
                     _ => panic!("invalid comparison result"),
                 }
+            }
+        } else if other.is_negative() {
+            // Both are negative
+            // Must compare absolute values
+            let cmp = self.cmp_abs(other);
+            match cmp {
+                0 => {
+                    // ABS(self) == ABS(other)
+                    // result = ZERO
+                    Self::scaled_zero(self.dscale.max(other.dscale))
+                }
+                1 => {
+                    // ABS(self) > ABS(other)
+                    // result = -(ABS(self) - ABS(other))
+                    let mut result = self.sub_abs(other);
+                    result.sign = NUMERIC_NEG;
+                    result
+                }
+                -1 => {
+                    // ABS(self) < ABS(other)
+                    // result = +(ABS(other) - ABS(self))
+                    let mut result = other.sub_abs(self);
+                    result.sign = NUMERIC_POS;
+                    result
+                }
+                _ => panic!("invalid comparison result"),
             }
         } else {
-            if other.is_negative() {
-                // Both are negative
-                // Must compare absolute values
-                let cmp = self.cmp_abs(other);
-                match cmp {
-                    0 => {
-                        // ABS(self) == ABS(other)
-                        // result = ZERO
-                        return Self::scaled_zero(self.dscale.max(other.dscale));
-                    }
-                    1 => {
-                        // ABS(self) > ABS(other)
-                        // result = -(ABS(self) - ABS(other))
-                        let mut result = self.sub_abs(other);
-                        result.sign = NUMERIC_NEG;
-                        return result;
-                    }
-                    -1 => {
-                        // ABS(self) < ABS(other)
-                        // result = +(ABS(other) - ABS(self))
-                        let mut result = other.sub_abs(self);
-                        result.sign = NUMERIC_POS;
-                        return result;
-                    }
-                    _ => panic!("invalid comparison result"),
-                }
-            } else {
-                // var1 is negative, var2 is positive
-                // result = -(ABS(self) + ABS(other))
-                let mut result = self.add_abs(other);
-                result.sign = NUMERIC_NEG;
-                return result;
-            }
+            // var1 is negative, var2 is positive
+            // result = -(ABS(self) + ABS(other))
+            let mut result = self.add_abs(other);
+            result.sign = NUMERIC_NEG;
+            result
         }
     }
 
@@ -1113,7 +1105,7 @@ impl NumericVar {
             let ndigits = var1.ndigits + var2.ndigits + 1;
             let max_digits =
                 res_weight + 1 + (rscale + DEC_DIGITS - 1) / DEC_DIGITS + MUL_GUARD_DIGITS;
-            std::cmp::min(ndigits, max_digits)
+            ndigits.min(max_digits)
         };
 
         if res_ndigits < 3 {
@@ -1145,7 +1137,7 @@ impl NumericVar {
         // Digit i1 of var1 and digit i2 of var2 are multiplied and added to digit
         // i1+i2+2 of the accumulator array, so we need only consider digits of
         // var1 for which i1 <= res_ndigits - 3.
-        let bound = std::cmp::min(var1_ndigits - 1, res_ndigits - 3);
+        let bound = (var1_ndigits - 1).min(res_ndigits - 3);
         for i1 in (0..=bound).rev() {
             let var1_digit = var1_digits[i1 as usize] as i32;
             if var1_digit == 0 {
@@ -1176,7 +1168,7 @@ impl NumericVar {
             //
             // As above, digits of var2 can be ignored if they don't contribute,
             // so we only include digits for which i1+i2+2 <= res_ndigits - 1.
-            let bound = std::cmp::min(var2_ndigits - 1, res_ndigits - i1 - 3);
+            let bound = (var2_ndigits - 1).min(res_ndigits - i1 - 3);
             let mut i = i1 + bound + 2;
             for i2 in (0..=bound).rev() {
                 dig[i as usize] += var1_digit * var2_digits[i2 as usize] as i32;
@@ -1262,13 +1254,11 @@ impl NumericVar {
         };
 
         // Select result scale
-        let mut rscale = NUMERIC_MIN_SIG_DIGITS - qweight * DEC_DIGITS;
-        rscale = std::cmp::max(rscale, self.dscale);
-        rscale = std::cmp::max(rscale, other.dscale);
-        rscale = std::cmp::max(rscale, NUMERIC_MIN_DISPLAY_SCALE);
-        rscale = std::cmp::min(rscale, NUMERIC_MAX_DISPLAY_SCALE);
-
-        rscale
+        (NUMERIC_MIN_SIG_DIGITS - qweight * DEC_DIGITS)
+            .max(self.dscale)
+            .max(other.dscale)
+            .max(NUMERIC_MIN_DISPLAY_SCALE)
+            .min(NUMERIC_MAX_DISPLAY_SCALE)
     }
 
     /// Division on variable level. Quotient of `self` / `other` is returned.
@@ -1277,6 +1267,7 @@ impl NumericVar {
     /// is truncated (towards zero) at that digit.
     ///
     /// Returns `None` if `other == 0`.
+    #[allow(clippy::cognitive_complexity)]
     fn div_common(&self, other: &Self, rscale: i32, round: bool) -> Option<Self> {
         debug_assert!(!self.is_nan());
         debug_assert!(!other.is_nan());
@@ -1309,7 +1300,7 @@ impl NumericVar {
             // The number of accurate result digits we need to produce
             let mut ndigits = res_weight + 1 + (rscale + DEC_DIGITS - 1) / DEC_DIGITS;
             // ... but always at least 1
-            ndigits = std::cmp::max(ndigits, 1);
+            ndigits = ndigits.max(1);
             // If rounding needed, figure one more digit to ensure correct result
             if round {
                 ndigits += 1;
@@ -1324,7 +1315,7 @@ impl NumericVar {
         // count that in div_ndigits.)
         let div_ndigits = {
             let ndigits = res_ndigits + var2_ndigits;
-            std::cmp::max(ndigits, var1_ndigits)
+            ndigits.max(var1_ndigits)
         };
 
         // We need a workspace with room for the working dividend (div_ndigits+1
@@ -1337,8 +1328,8 @@ impl NumericVar {
         // any additional dividend positions beyond var1_ndigits, start out 0.
         let mut workspace = vec![0 as NumericDigit; (div_ndigits + var2_ndigits + 2) as usize];
         let (dividend, divisor) = workspace.split_at_mut(div_ndigits as usize + 1);
-        dividend[1..var1_ndigits as usize + 1].copy_from_slice(self.digits());
-        divisor[1..var2_ndigits as usize + 1].copy_from_slice(other.digits());
+        dividend[1..=var1_ndigits as usize].copy_from_slice(self.digits());
+        divisor[1..=var2_ndigits as usize].copy_from_slice(other.digits());
 
         // Now we can alloc the result to hold the generated quotient digits.
         let mut result = Self::nan();
@@ -1507,6 +1498,7 @@ impl NumericVar {
     /// the correct answer is 1.
     ///
     /// Returns `None` if `other == 0`.
+    #[allow(clippy::cognitive_complexity)]
     fn div_fast_common(&self, other: &Self, rscale: i32, round: bool) -> Option<Self> {
         debug_assert!(!self.is_nan());
         debug_assert!(!other.is_nan());
@@ -1671,7 +1663,7 @@ impl NumericVar {
                 // The lower-order terms in qdigit can change this result by not
                 // more than about twice INT_MAX/NBASE, so overflow is impossible.
                 if qdigit != 0 {
-                    let istop = std::cmp::min(var2_ndigits, div_ndigits - qi as i32 + 1);
+                    let istop = var2_ndigits.min(div_ndigits - qi as i32 + 1);
                     for i in 0..istop as usize {
                         div[qi + i] -= qdigit * var2_digits[i] as i32;
                     }
@@ -1909,12 +1901,12 @@ impl NumericVar {
         let mut f = digits[0] as f64;
         let mut p = self.weight * DEC_DIGITS;
 
-        for i in 1..self.ndigits as usize {
+        for (i, &digit) in digits.iter().enumerate().skip(1) {
             if (i * DEC_DIGITS as usize) < 16 {
                 break;
             }
 
-            f = f * NBASE as f64 + digits[i] as f64;
+            f = f * NBASE as f64 + digit as f64;
             p -= DEC_DIGITS;
         }
 
@@ -2112,11 +2104,9 @@ impl NumericVar {
         let ln_num = self.ln_common(ln_num_rscale);
 
         // Divide and round to the required scale
-        let result = ln_num
+        ln_num
             .div_fast_common(&ln_base, rscale, true)
-            .expect(DIVIDE_BY_ZERO_MSG);
-
-        result
+            .expect(DIVIDE_BY_ZERO_MSG)
     }
 
     /// Raise e to the power of x, computed to rscale fractional digits.
@@ -2169,7 +2159,7 @@ impl NumericVar {
         // raise the Taylor series result to the power 2^ndiv2, which introduces
         // an error of up to around log10(2^ndiv2) digits, so work with this many
         // extra digits of precision (plus a few more for good measure).
-        const LOG10_2: f64 = 0.301029995663981_f64;
+        const LOG10_2: f64 = 0.301_029_995_663_981_f64;
         let mut sig_digits = 1 + dweight + rscale + (ndiv2 as f64 * LOG10_2) as i32;
         sig_digits = sig_digits.max(0) + 8;
 
@@ -2344,9 +2334,7 @@ impl NumericVar {
         // and do the real calculation
         ln_base = self.ln_common(local_rscale);
         ln_num = ln_base.mul_common(exp, local_rscale);
-        let result = ln_num.exp_common(rscale);
-
-        result
+        ln_num.exp_common(rscale)
     }
 
     /// Negate this value.
@@ -2518,8 +2506,7 @@ impl NumericVar {
             .max(NUMERIC_MIN_DISPLAY_SCALE)
             .min(NUMERIC_MAX_DISPLAY_SCALE);
 
-        let result = self.sqrt_common(rscale);
-        result
+        self.sqrt_common(rscale)
     }
 
     /// Compute the natural logarithm of `self`.
@@ -2544,8 +2531,7 @@ impl NumericVar {
             .max(NUMERIC_MIN_DISPLAY_SCALE)
             .min(NUMERIC_MAX_DISPLAY_SCALE);
 
-        let result = self.ln_common(rscale);
-        result
+        self.ln_common(rscale)
     }
 
     /// Compute the logarithm of `self` in a given base.
@@ -2566,10 +2552,9 @@ impl NumericVar {
         assert_ne!(cmp, 0, "cannot take logarithm of zero");
         assert!(cmp > 0, "cannot take logarithm of a negative number");
 
-        //  Call log_common() to compute and return the result; note it handles scale
-        //	selection itself.
-        let result = self.log_common(base);
-        result
+        //  Call log_common() to compute and return the result;
+        //	note it handles scale selection itself.
+        self.log_common(base)
     }
 
     /// Compute the base 2 logarithm of `self`.
@@ -2637,10 +2622,8 @@ impl NumericVar {
         // NaN ^ 0 = 1, and 1 ^ NaN = 1, while all other cases with NaN inputs
         // yield NaN (with no error).
         if self.is_nan() {
-            if !exp.is_nan() {
-                if exp.cmp_common(&Self::zero()) == 0 {
-                    return Some(ONE.clone());
-                }
+            if !exp.is_nan() && exp.cmp_common(&Self::zero()) == 0 {
+                return Some(ONE.clone());
             }
             return Some(Self::nan());
         } else if exp.is_nan() {
@@ -2754,7 +2737,7 @@ impl NumericVar {
         let mut s = self.to_string();
 
         // If there's no decimal point, there's certainly nothing to remove.
-        if let Some(_) = s.find('.') {
+        if s.find('.').is_some() {
             // Back up over trailing fractional zeroes.  Since there is a decimal
             // point, this loop will terminate safely.
             let mut new_len = s.len();
@@ -2820,6 +2803,7 @@ pub struct Typmod(i32);
 impl Typmod {
     /// Creates a `Typmod`.
     ///
+    /// # Safety
     /// Callers have to guarantee that:
     /// * `1 <= precision <= NUMERIC_MAX_PRECISION`
     /// * `0 <= scale <= precision`
@@ -2834,6 +2818,7 @@ impl Typmod {
     /// Creates a `Typmod`.
     /// `scale` defaults to zero.
     ///
+    /// # Safety
     /// Callers have to guarantee that:
     /// * `1 <= precision <= NUMERIC_MAX_PRECISION`
     #[inline]
@@ -2850,9 +2835,7 @@ impl Typmod {
     /// * if `0 <= scale <= precision`
     #[inline]
     pub fn new(precision: i32, scale: i32) -> Option<Self> {
-        if precision < 1 || precision > NUMERIC_MAX_PRECISION {
-            None
-        } else if scale < 0 || scale > precision {
+        if precision < 1 || precision > NUMERIC_MAX_PRECISION || scale < 0 || scale > precision {
             None
         } else {
             Some(unsafe { Self::new_unchecked(precision, scale) })
@@ -2875,6 +2858,7 @@ impl Typmod {
 
     /// Creates a `Typmod` from a `Typmod`'s value.
     ///
+    /// # Safety
     /// Callers have to guarantee that the `value` is valid.
     #[inline]
     pub unsafe fn from_value_unchecked(value: i32) -> Self {
@@ -2952,7 +2936,7 @@ impl Hash for NumericVar {
 
         // Note that we don't hash on the Numeric's scale, since two numerics can
         // compare equal but have different scales.
-        &digits[start_offset..self.ndigits as usize - end_offset].hash(state);
+        digits[start_offset..self.ndigits as usize - end_offset].hash(state);
 
         // Mix in the weight
         state.write_i32(weight);
