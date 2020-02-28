@@ -3,6 +3,7 @@
 //! Arbitrary precision numeric, compatible with PostgreSQL's numeric.
 
 mod convert;
+mod data;
 mod error;
 mod ops;
 mod parse;
@@ -11,6 +12,7 @@ pub use crate::convert::TryFromRef;
 pub use crate::error::NumericParseError;
 pub use crate::error::NumericTryFromError;
 
+use crate::data::NumericData;
 use crate::parse::{parse_decimal, Decimal};
 use lazy_static::lazy_static;
 use std::convert::{TryFrom, TryInto};
@@ -99,14 +101,13 @@ const DIVIDE_BY_ZERO_MSG: &str = "attempt to divide by zero";
 /// make use of the base-10 weight (ie, the approximate log10 of the value).
 /// To avoid confusion, such a decimal-units weight is called a "dweight".
 ///
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct NumericVar {
     ndigits: i32,
     weight: i32,
     sign: i32,
     dscale: i32,
-    buf: Vec<NumericDigit>,
-    offset: usize,
+    data: NumericData,
 }
 
 impl NumericVar {
@@ -117,8 +118,7 @@ impl NumericVar {
             weight: 0,
             sign: NUMERIC_NAN,
             dscale: 0,
-            buf: Vec::new(),
-            offset: 0,
+            data: NumericData::new(),
         }
     }
 
@@ -134,8 +134,7 @@ impl NumericVar {
             weight: 0,
             sign: NUMERIC_POS,
             dscale: scale,
-            buf: Vec::new(),
-            offset: 0,
+            data: NumericData::new(),
         }
     }
 
@@ -172,25 +171,18 @@ impl NumericVar {
     /// Returns immutable digits buffer.
     #[inline]
     fn digits(&self) -> &[NumericDigit] {
-        debug_assert_eq!(self.buf.len(), self.offset + self.ndigits as usize);
-        &self.buf.as_slice()[self.offset..self.offset + self.ndigits as usize]
+        self.data.digits(self.ndigits)
     }
 
     /// Returns mutable digits buffer.
     #[inline]
     fn digits_mut(&mut self) -> &mut [NumericDigit] {
-        debug_assert_eq!(self.buf.len(), self.offset + self.ndigits as usize);
-        &mut self.buf.as_mut_slice()[self.offset..self.offset + self.ndigits as usize]
+        self.data.digits_mut(self.ndigits)
     }
 
     /// Allocates digits buffer.
     fn alloc_buf(&mut self, ndigits: i32) {
-        self.buf = Vec::with_capacity(ndigits as usize + 1);
-        unsafe {
-            self.buf.set_len(ndigits as usize + 1);
-        }
-        self.buf[0] = 0; // spare digit for later rounding
-        self.offset = 1;
+        self.data.buf_alloc(ndigits);
         self.ndigits = ndigits;
     }
 
@@ -201,8 +193,7 @@ impl NumericVar {
         self.ndigits = 0;
         self.weight = 0;
         self.sign = NUMERIC_POS;
-        self.buf = Vec::new();
-        self.offset = 0;
+        self.data.clear();
     }
 
     /// Round the value of a variable to no more than rscale decimal digits
@@ -213,7 +204,7 @@ impl NumericVar {
         debug_assert!(!self.is_nan());
 
         // Carry may need one additional digit
-        debug_assert!(self.offset > 0 || self.ndigits == 0);
+        debug_assert!(self.data.offset() > 0 || self.ndigits == 0);
 
         // decimal digits wanted
         let di = (self.weight + 1) * DEC_DIGITS + rscale;
@@ -231,9 +222,10 @@ impl NumericVar {
             let di = di % DEC_DIGITS;
 
             if ndigits < self.ndigits || (ndigits == self.ndigits && di > 0) {
+                let digits = self.data.digits_mut(self.ndigits);
+
                 self.ndigits = ndigits;
 
-                let digits = &mut self.buf.as_mut_slice()[self.offset..];
                 let mut carry: i32 = 0;
 
                 if di == 0 {
@@ -257,9 +249,9 @@ impl NumericVar {
                     }
                 }
 
+                let offset = self.data.offset();
                 // Carry may need one additional digit, so we use buf from start.
-                let digits = &mut self.buf.as_mut_slice();
-                let offset = self.offset;
+                let digits = self.data.as_mut_slice();
 
                 // Propagate carry if needed
                 while carry > 0 {
@@ -278,8 +270,8 @@ impl NumericVar {
 
                 if ndigits < 0 {
                     debug_assert_eq!(ndigits, -1);
-                    debug_assert!(self.offset > 0);
-                    self.offset -= 1;
+                    debug_assert!(self.data.offset() > 0);
+                    self.data.offset_sub(1);
                     self.ndigits += 1;
                     self.weight += 1;
                 }
@@ -287,7 +279,6 @@ impl NumericVar {
         }
 
         self.dscale = rscale;
-        self.buf.truncate(self.offset + self.ndigits as usize);
     }
 
     /// Truncate (towards zero) the value of a variable at rscale decimal digits
@@ -316,7 +307,7 @@ impl NumericVar {
                 let di = di % DEC_DIGITS;
 
                 if di > 0 {
-                    let digits = &mut self.buf.as_mut_slice()[self.offset..];
+                    let digits = self.digits_mut();
                     let pow10 = ROUND_POWERS[di as usize];
                     ndigits -= 1;
 
@@ -327,7 +318,6 @@ impl NumericVar {
         }
 
         self.dscale = rscale;
-        self.buf.truncate(self.offset + self.ndigits as usize);
     }
 
     /// Return the smallest integer greater than or equal to the argument
@@ -362,7 +352,7 @@ impl NumericVar {
 
     /// Strips the leading and trailing zeroes, and normalize zero.
     fn strip(&mut self) {
-        let digits = &self.buf.as_slice()[self.offset..];
+        let digits = self.data.digits(self.ndigits);
         let mut ndigits = self.ndigits;
         let mut i = 0;
 
@@ -384,20 +374,14 @@ impl NumericVar {
             self.weight = 0;
         }
 
-        self.offset += i;
+        self.data.offset_add(i as u32);
         self.ndigits = ndigits;
-        self.buf.truncate(self.offset + ndigits as usize);
     }
 
     /// Reserve 1 digit for rounding.
-    fn reserve_digit(&mut self) {
-        if self.ndigits > 0 && self.offset == 0 {
-            let mut buf = Vec::with_capacity(self.ndigits as usize + 1);
-            buf.push(0); // spare digit for rounding
-            buf.extend_from_slice(self.digits());
-
-            self.buf = buf;
-            self.offset = 1;
+    fn reserve_rounding_digit(&mut self) {
+        if self.ndigits > 0 {
+            self.data.reserve_rounding_digit(self.ndigits);
         }
     }
 
@@ -411,15 +395,9 @@ impl NumericVar {
         self.dscale = value.dscale;
 
         if value.ndigits > 0 {
-            let mut buf = Vec::with_capacity(value.ndigits as usize + 1);
-            buf.push(0); // spare digit for rounding
-            buf.extend_from_slice(value.digits());
-
-            self.buf = buf;
-            self.offset = 1;
+            self.data = value.data.clone(self.ndigits);
         } else {
-            self.buf = Vec::new();
-            self.offset = 0;
+            self.data.clear();
         }
     }
 
@@ -2770,6 +2748,25 @@ fn read_numeric_digit(s: &[u8]) -> NumericDigit {
     }
 
     digit
+}
+
+impl Clone for NumericVar {
+    #[inline]
+    fn clone(&self) -> Self {
+        let data = if self.ndigits > 0 {
+            self.data.clone(self.ndigits)
+        } else {
+            NumericData::new()
+        };
+
+        Self {
+            ndigits: self.ndigits,
+            weight: self.weight,
+            sign: self.sign,
+            dscale: self.dscale,
+            data,
+        }
+    }
 }
 
 impl fmt::Display for NumericVar {

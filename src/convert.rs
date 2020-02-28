@@ -249,7 +249,7 @@ fn set_var_from_unsigned<T: Unsigned>(var: &mut NumericVar, val: T) {
             break;
         }
     }
-    var.offset = var.buf.len() - ndigits as usize;
+    var.data.offset_set(var.data.len() - ndigits as u32);
     var.ndigits = ndigits;
     var.weight = ndigits - 1;
 }
@@ -410,7 +410,7 @@ fn into_signed<T: Signed>(var: &mut NumericVar) -> Result<T, NumericTryFromError
     // Ensure no overflowing happened when NumericDigit convert to T
     debug_assert!(std::mem::size_of::<T>() >= std::mem::size_of::<NumericDigit>());
     // Ensure enough space for carry.
-    debug_assert!(var.offset > 0 || var.ndigits == 0);
+    debug_assert!(var.data.offset() > 0 || var.ndigits == 0);
 
     if var.is_nan() {
         return Err(NumericTryFromError::invalid());
@@ -470,7 +470,7 @@ fn into_unsigned<T: Unsigned>(var: &mut NumericVar) -> Result<T, NumericTryFromE
     // Ensure no overflowing happened when NumericDigit convert to T
     debug_assert!(std::mem::size_of::<T>() >= std::mem::size_of::<NumericDigit>());
     // Ensure enough space for carry.
-    debug_assert!(var.offset > 0 || var.ndigits == 0);
+    debug_assert!(var.data.offset() > 0 || var.ndigits == 0);
 
     if var.is_nan() {
         return Err(NumericTryFromError::invalid());
@@ -526,7 +526,7 @@ macro_rules! impl_try_from_numeric_for_signed {
 
             #[inline]
             fn try_from(mut value: NumericVar) -> Result<Self, Self::Error> {
-                value.reserve_digit();
+                value.reserve_rounding_digit();
                 into_signed(&mut value)
             }
         }
@@ -540,7 +540,7 @@ macro_rules! impl_try_from_numeric_for_unsigned {
 
             #[inline]
             fn try_from(mut value: NumericVar) -> Result<Self, Self::Error> {
-                value.reserve_digit();
+                value.reserve_rounding_digit();
                 into_unsigned(&mut value)
             }
         }
