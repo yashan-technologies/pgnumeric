@@ -13,7 +13,6 @@ pub use crate::error::NumericParseError;
 pub use crate::error::NumericTryFromError;
 
 use crate::data::NumericData;
-use crate::parse::{parse_decimal, Decimal};
 use lazy_static::lazy_static;
 use std::convert::{TryFrom, TryInto};
 use std::fmt;
@@ -399,71 +398,6 @@ impl NumericVar {
         } else {
             self.data.clear();
         }
-    }
-
-    /// Parses a string bytes and put the number into this variable.
-    ///
-    /// This function does not handle leading or trailing spaces, and it doesn't
-    /// accept `NaN` either. It returns the remaining string bytes so that caller can
-    /// check for trailing spaces/garbage if deemed necessary.
-    fn set_from_str<'a>(&mut self, s: &'a [u8]) -> Result<&'a [u8], NumericParseError> {
-        let (
-            Decimal {
-                sign,
-                integral,
-                fractional,
-                exp,
-            },
-            s,
-        ) = parse_decimal(s)?;
-
-        let dec_weight = integral.len() as i32 + exp - 1;
-        let dec_scale = {
-            let mut result = fractional.len() as i32 - exp;
-            if result < 0 {
-                result = 0;
-            }
-            result
-        };
-
-        let weight = if dec_weight >= 0 {
-            (dec_weight + 1 + DEC_DIGITS - 1) / DEC_DIGITS - 1
-        } else {
-            -((-dec_weight - 1) / DEC_DIGITS + 1)
-        };
-        let offset = (weight + 1) * DEC_DIGITS - (dec_weight + 1);
-        let ndigits = (integral.len() as i32 + fractional.len() as i32 + offset + DEC_DIGITS - 1)
-            / DEC_DIGITS;
-
-        let mut dec_digits: Vec<u8> =
-            Vec::with_capacity(integral.len() + fractional.len() + DEC_DIGITS as usize * 2);
-        // leading padding for digit alignment later
-        dec_digits.extend_from_slice([0; DEC_DIGITS as usize].as_ref());
-        dec_digits.extend(integral.iter().map(|&i| i - b'0'));
-        dec_digits.extend(fractional.iter().map(|&i| i - b'0'));
-        // trailing padding for digit alignment later
-        dec_digits.extend_from_slice([0; DEC_DIGITS as usize].as_ref());
-
-        self.alloc_buf(ndigits);
-        self.sign = sign as i32;
-        self.weight = weight;
-        self.dscale = dec_scale;
-
-        let digits = self.digits_mut();
-        debug_assert_eq!(ndigits as usize, digits.len());
-
-        let iter = (&dec_digits[(DEC_DIGITS - offset) as usize..])
-            .chunks_exact(DEC_DIGITS as usize)
-            .take(ndigits as usize);
-        for (i, chunk) in iter.enumerate() {
-            let digit = read_numeric_digit(chunk);
-            digits[i] = digit;
-        }
-
-        // Strip any leading/trailing zeroes, and normalize weight if zero.
-        self.strip();
-
-        Ok(s)
     }
 
     /// Convert `self` to text representation.
@@ -2734,20 +2668,6 @@ impl NumericVar {
 
         s
     }
-}
-
-/// Reads a `NumericDigit` from `&[u8]`.
-#[inline]
-fn read_numeric_digit(s: &[u8]) -> NumericDigit {
-    debug_assert!(s.len() <= DEC_DIGITS as usize);
-
-    let mut digit = 0;
-
-    for &i in s {
-        digit = digit * 10 + i as NumericDigit;
-    }
-
-    digit
 }
 
 impl Clone for NumericVar {

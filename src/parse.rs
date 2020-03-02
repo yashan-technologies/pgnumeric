@@ -2,19 +2,19 @@
 
 //! Numeric parsing utilities
 
-use crate::{NumericParseError, NumericVar, NUMERIC_NEG, NUMERIC_POS};
+use crate::{NumericDigit, NumericParseError, NumericVar, DEC_DIGITS, NUMERIC_NEG, NUMERIC_POS};
 use std::convert::TryInto;
 use std::str::FromStr;
 
 #[derive(Debug)]
-pub enum Sign {
+enum Sign {
     Positive = NUMERIC_POS as isize,
     Negative = NUMERIC_NEG as isize,
 }
 
 /// The interesting parts of a decimal string.
 #[derive(Debug)]
-pub struct Decimal<'a> {
+struct Decimal<'a> {
     pub sign: Sign,
     pub integral: &'a [u8],
     pub fractional: &'a [u8],
@@ -23,7 +23,7 @@ pub struct Decimal<'a> {
 
 /// Checks if the input string is a valid numeric and if so, locate the integral
 /// part, the fractional part, and the exponent in it.
-pub fn parse_decimal(s: &[u8]) -> Result<(Decimal, &[u8]), NumericParseError> {
+fn parse_decimal(s: &[u8]) -> Result<(Decimal, &[u8]), NumericParseError> {
     let (sign, s) = extract_sign(s);
 
     if s.is_empty() {
@@ -160,6 +160,85 @@ fn extract_exponent(s: &[u8]) -> Result<(i32, &[u8]), NumericParseError> {
     Ok((exp as i32, s))
 }
 
+/// Reads a `NumericDigit` from `&[u8]`.
+#[inline]
+fn read_numeric_digit(s: &[u8]) -> NumericDigit {
+    debug_assert!(s.len() <= DEC_DIGITS as usize);
+
+    let mut digit = 0;
+
+    for &i in s {
+        digit = digit * 10 + i as NumericDigit;
+    }
+
+    digit
+}
+
+/// Parses a string bytes and put the number into this variable.
+///
+/// This function does not handle leading or trailing spaces, and it doesn't
+/// accept `NaN` either. It returns the remaining string bytes so that caller can
+/// check for trailing spaces/garbage if deemed necessary.
+fn set_from_str<'a>(num: &mut NumericVar, s: &'a [u8]) -> Result<&'a [u8], NumericParseError> {
+    let (
+        Decimal {
+            sign,
+            integral,
+            fractional,
+            exp,
+        },
+        s,
+    ) = parse_decimal(s)?;
+
+    let dec_weight = integral.len() as i32 + exp - 1;
+    let dec_scale = {
+        let mut result = fractional.len() as i32 - exp;
+        if result < 0 {
+            result = 0;
+        }
+        result
+    };
+
+    let weight = if dec_weight >= 0 {
+        (dec_weight + 1 + DEC_DIGITS - 1) / DEC_DIGITS - 1
+    } else {
+        -((-dec_weight - 1) / DEC_DIGITS + 1)
+    };
+    let offset = (weight + 1) * DEC_DIGITS - (dec_weight + 1);
+    let ndigits =
+        (integral.len() as i32 + fractional.len() as i32 + offset + DEC_DIGITS - 1) / DEC_DIGITS;
+
+    let mut dec_digits: Vec<u8> =
+        Vec::with_capacity(integral.len() + fractional.len() + DEC_DIGITS as usize * 2);
+    // leading padding for digit alignment later
+    dec_digits.extend_from_slice([0; DEC_DIGITS as usize].as_ref());
+    dec_digits.extend(integral.iter().map(|&i| i - b'0'));
+    dec_digits.extend(fractional.iter().map(|&i| i - b'0'));
+    // trailing padding for digit alignment later
+    dec_digits.extend_from_slice([0; DEC_DIGITS as usize].as_ref());
+
+    num.alloc_buf(ndigits);
+    num.sign = sign as i32;
+    num.weight = weight;
+    num.dscale = dec_scale;
+
+    let digits = num.digits_mut();
+    debug_assert_eq!(ndigits as usize, digits.len());
+
+    let iter = (&dec_digits[(DEC_DIGITS - offset) as usize..])
+        .chunks_exact(DEC_DIGITS as usize)
+        .take(ndigits as usize);
+    for (i, chunk) in iter.enumerate() {
+        let digit = read_numeric_digit(chunk);
+        digits[i] = digit;
+    }
+
+    // Strip any leading/trailing zeroes, and normalize weight if zero.
+    num.strip();
+
+    Ok(s)
+}
+
 /// Parses a string slice and creates a number.
 ///
 /// This function handles leading or trailing spaces, and it
@@ -181,7 +260,7 @@ fn from_str(s: &str) -> Result<NumericVar, NumericParseError> {
         NumericVar::nan()
     } else {
         let mut n = NumericVar::nan();
-        let s = n.set_from_str(s)?;
+        let s = set_from_str(&mut n, s)?;
 
         if s.iter().any(|n| !n.is_ascii_whitespace()) {
             return Err(NumericParseError::invalid());
