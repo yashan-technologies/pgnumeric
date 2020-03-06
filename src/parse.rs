@@ -2,7 +2,8 @@
 
 //! Numeric parsing utilities
 
-use crate::{NumericDigit, NumericParseError, NumericVar, DEC_DIGITS, NUMERIC_NEG, NUMERIC_POS};
+use crate::data::{NumericDigit, NUMERIC_NEG, NUMERIC_POS};
+use crate::{Numeric, NumericParseError, DEC_DIGITS};
 use std::convert::TryInto;
 use std::str::FromStr;
 
@@ -179,7 +180,7 @@ fn read_numeric_digit(s: &[u8]) -> NumericDigit {
 /// This function does not handle leading or trailing spaces, and it doesn't
 /// accept `NaN` either. It returns the remaining string bytes so that caller can
 /// check for trailing spaces/garbage if deemed necessary.
-fn set_from_str<'a>(num: &mut NumericVar, s: &'a [u8]) -> Result<&'a [u8], NumericParseError> {
+fn set_from_str<'a>(num: &mut Numeric, s: &'a [u8]) -> Result<&'a [u8], NumericParseError> {
     let (
         Decimal {
             sign,
@@ -218,9 +219,9 @@ fn set_from_str<'a>(num: &mut NumericVar, s: &'a [u8]) -> Result<&'a [u8], Numer
     dec_digits.extend_from_slice([0; DEC_DIGITS as usize].as_ref());
 
     num.alloc_buf(ndigits);
-    num.sign = sign as i32;
     num.weight = weight;
     num.dscale = dec_scale;
+    num.sign = sign as u16;
 
     let digits = num.digits_mut();
     debug_assert_eq!(ndigits as usize, digits.len());
@@ -243,7 +244,7 @@ fn set_from_str<'a>(num: &mut NumericVar, s: &'a [u8]) -> Result<&'a [u8], Numer
 ///
 /// This function handles leading or trailing spaces, and it
 /// accepts `NaN` either.
-fn from_str(s: &str) -> Result<NumericVar, NumericParseError> {
+fn from_str(s: &str) -> Result<Numeric, NumericParseError> {
     let s = s.as_bytes();
     let s = eat_whitespaces(s);
     if s.is_empty() {
@@ -252,14 +253,14 @@ fn from_str(s: &str) -> Result<NumericVar, NumericParseError> {
 
     let (is_nan, s) = extract_nan(s);
 
-    let numeric = if is_nan {
+    let mut numeric = if is_nan {
         if s.iter().any(|n| !n.is_ascii_whitespace()) {
             return Err(NumericParseError::invalid());
         }
 
-        NumericVar::nan()
+        Numeric::nan()
     } else {
-        let mut n = NumericVar::nan();
+        let mut n = Numeric::nan();
         let s = set_from_str(&mut n, s)?;
 
         if s.iter().any(|n| !n.is_ascii_whitespace()) {
@@ -269,10 +270,17 @@ fn from_str(s: &str) -> Result<NumericVar, NumericParseError> {
         n
     };
 
+    if !numeric.is_nan() {
+        let overflow = numeric.make_result();
+        if overflow {
+            return Err(NumericParseError::overflow());
+        }
+    }
+
     Ok(numeric)
 }
 
-impl FromStr for NumericVar {
+impl FromStr for Numeric {
     type Err = NumericParseError;
 
     #[inline]
@@ -283,20 +291,20 @@ impl FromStr for NumericVar {
 
 #[cfg(test)]
 mod tests {
-    use crate::{NumericParseError, NumericVar};
+    use crate::{Numeric, NumericParseError};
 
     fn assert_parse_empty<S: AsRef<str>>(s: S) {
-        let result = s.as_ref().parse::<NumericVar>();
+        let result = s.as_ref().parse::<Numeric>();
         assert_eq!(result.unwrap_err(), NumericParseError::empty());
     }
 
     fn assert_parse_invalid<S: AsRef<str>>(s: S) {
-        let result = s.as_ref().parse::<NumericVar>();
+        let result = s.as_ref().parse::<Numeric>();
         assert_eq!(result.unwrap_err(), NumericParseError::invalid());
     }
 
     fn assert_parse_overflow<S: AsRef<str>>(s: S) {
-        let result = s.as_ref().parse::<NumericVar>();
+        let result = s.as_ref().parse::<Numeric>();
         assert_eq!(result.unwrap_err(), NumericParseError::overflow());
     }
 
@@ -328,7 +336,7 @@ mod tests {
     }
 
     fn assert_parse<S: AsRef<str>, V: AsRef<str>>(s: S, expected: V) {
-        let numeric = s.as_ref().parse::<NumericVar>().unwrap();
+        let numeric = s.as_ref().parse::<Numeric>().unwrap();
         assert_eq!(numeric.to_string(), expected.as_ref());
     }
 

@@ -12,7 +12,7 @@ pub use crate::convert::TryFromRef;
 pub use crate::error::NumericParseError;
 pub use crate::error::NumericTryFromError;
 
-use crate::data::NumericData;
+use crate::data::*;
 use lazy_static::lazy_static;
 use std::convert::{TryFrom, TryInto};
 use std::fmt;
@@ -40,51 +40,42 @@ const DEC_DIGITS: i32 = 4;
 const MUL_GUARD_DIGITS: i32 = 2;
 const DIV_GUARD_DIGITS: i32 = 4;
 
-//const NUMERIC_SIGN_MASK: i32 = 0xC000;
-const NUMERIC_POS: i32 = 0x0000;
-const NUMERIC_NEG: i32 = 0x4000;
-//const NUMERIC_SHORT: i32 = 0x8000;
-const NUMERIC_NAN: i32 = 0xC000;
-
-const VAR_HEADER_SIZE: i32 = std::mem::size_of::<i32>() as i32;
-
-type NumericDigit = i16;
-
 const ROUND_POWERS: [NumericDigit; 4] = [0, 1000, 100, 10];
 
 lazy_static! {
     // 0.5
-    static ref ZERO_POINT_FIVE: NumericVar = ".5".parse().unwrap();
+    static ref ZERO_POINT_FIVE: Numeric = ".5".parse().unwrap();
     // 0.9
-    static ref ZERO_POINT_NINE: NumericVar = ".9".parse().unwrap();
+    static ref ZERO_POINT_NINE: Numeric = ".9".parse().unwrap();
     // 1.1
-    static ref ONE_POINT_ONE: NumericVar = "1.1".parse().unwrap();
+    static ref ONE_POINT_ONE: Numeric = "1.1".parse().unwrap();
     // 1
-    static ref ONE: NumericVar = "1".parse().unwrap();
+    static ref ONE: Numeric = "1".parse().unwrap();
     // 2
-    static ref TWO: NumericVar = "2".parse().unwrap();
+    static ref TWO: Numeric = "2".parse().unwrap();
     // 10
-    static ref TEN: NumericVar = "10".parse().unwrap();
+    static ref TEN: Numeric = "10".parse().unwrap();
 }
 
 const DIVIDE_BY_ZERO_MSG: &str = "attempt to divide by zero";
+const VALUE_OVERFLOW_MSG: &str = "value overflows numeric format";
 
-/// `NumericVar` is the format we use for arithmetic.
-/// The value represented by a NumericVar is determined by the `sign`, `weight`,
+/// `Numeric` is the format we use for arithmetic.
+/// The value represented by a `Numeric` is determined by the `sign`, `weight`,
 /// `ndigits`, and `digits[]` array.
 ///
-/// Note: the first digit of a NumericVar's value is assumed to be multiplied
+/// Note: the first digit of a Numeric's value is assumed to be multiplied
 /// by NBASE ** weight.  Another way to say it is that there are weight+1
 /// digits before the decimal point.  It is possible to have weight < 0.
 ///
-/// `buf` points at the physical start of the digit buffer for the
-/// NumericVar. `offset` points at the first digit in actual use (the one
+/// `data.buf` points at the physical start of the digit buffer for the
+/// Numeric. `data.offset` points at the first digit in actual use (the one
 /// with the specified weight).  We normally leave an unused digit or two
 /// (preset to zeroes) between buf and digits, so that there is room to store
 /// a carry out of the top digit without reallocating space.  We just need to
 /// decrement digits (and increment weight) to make room for the carry digit.
 /// (There is no such extra space in a numeric value stored in the database,
-/// only in a NumericVar in memory.)
+/// only in a Numeric in memory.)
 ///
 /// `dscale`, or display scale, is the nominal precision expressed as number
 /// of digits after the decimal point (it must always be >= 0 at present).
@@ -101,40 +92,33 @@ const DIVIDE_BY_ZERO_MSG: &str = "attempt to divide by zero";
 /// To avoid confusion, such a decimal-units weight is called a "dweight".
 ///
 #[derive(Debug)]
-pub struct NumericVar {
+pub struct Numeric {
     ndigits: i32,
     weight: i32,
-    sign: i32,
     dscale: i32,
+    sign: u16,
     data: NumericData,
 }
 
-impl NumericVar {
+impl Numeric {
     /// Creates a `NaN` numeric.
+    #[inline]
     pub const fn nan() -> Self {
         Self {
             ndigits: 0,
             weight: 0,
-            sign: NUMERIC_NAN,
             dscale: 0,
+            sign: NUMERIC_NAN,
             data: NumericData::new(),
         }
     }
 
     /// Creates a zero numeric.
-    pub const fn zero() -> Self {
-        Self::scaled_zero(0)
-    }
-
-    /// Creates a zero numeric with given scale.
-    pub const fn scaled_zero(scale: i32) -> Self {
-        Self {
-            ndigits: 0,
-            weight: 0,
-            sign: NUMERIC_POS,
-            dscale: scale,
-            data: NumericData::new(),
-        }
+    #[inline]
+    pub fn zero() -> Self {
+        let mut zero = Self::zero_owned(0);
+        zero.data.set_header(0, 0, NUMERIC_POS, 0);
+        zero
     }
 
     /// Checks if `self` is `NaN`.
@@ -167,6 +151,31 @@ impl NumericVar {
         }
     }
 
+    /// Creates a zero numeric with unowned data.
+    #[inline]
+    const fn zero_unowned() -> Self {
+        Self {
+            ndigits: 0,
+            weight: 0,
+            dscale: 0,
+            sign: NUMERIC_POS,
+            data: NumericData::zero_unowned(),
+        }
+    }
+
+    /// Creates a zero numeric with given scale and owned data.
+    #[inline]
+    fn zero_owned(scale: i32) -> Self {
+        assert!(scale >= 0 && scale <= NUMERIC_DSCALE_MAX as i32);
+        Self {
+            ndigits: 0,
+            weight: 0,
+            sign: NUMERIC_POS,
+            dscale: scale,
+            data: NumericData::zero_owned(),
+        }
+    }
+
     /// Returns immutable digits buffer.
     #[inline]
     fn digits(&self) -> &[NumericDigit] {
@@ -180,14 +189,39 @@ impl NumericVar {
     }
 
     /// Allocates digits buffer.
+    #[inline]
     fn alloc_buf(&mut self, ndigits: i32) {
         self.data.buf_alloc(ndigits);
         self.ndigits = ndigits;
     }
 
+    /// Guarantee the data is owned.
+    #[inline]
+    fn guarantee_owned(&mut self) {
+        self.data.guarantee_owned(self.ndigits);
+    }
+
+    /// Copy `self` to another numeric.
+    /// Notes that we do not set header.
+    #[inline]
+    fn copy(&self) -> Self {
+        debug_assert!(!self.is_nan());
+
+        let data = self.data.copy(self.ndigits);
+
+        Self {
+            ndigits: self.ndigits,
+            weight: self.weight,
+            sign: self.sign,
+            dscale: self.dscale,
+            data,
+        }
+    }
+
     /// Sets `self` to ZERO.
     ///
     /// Note: its dscale is not touched.
+    #[inline]
     fn zeroed(&mut self) {
         self.ndigits = 0;
         self.weight = 0;
@@ -251,6 +285,7 @@ impl NumericVar {
                 let offset = self.data.offset();
                 // Carry may need one additional digit, so we use buf from start.
                 let digits = self.data.as_mut_slice();
+                digits[offset as usize - 1] = 0;
 
                 // Propagate carry if needed
                 while carry > 0 {
@@ -321,10 +356,11 @@ impl NumericVar {
 
     /// Return the smallest integer greater than or equal to the argument
     /// on variable level
+    #[inline]
     fn ceil_common(&self) -> Self {
         debug_assert!(!self.is_nan());
 
-        let mut result = self.clone();
+        let mut result = self.copy();
         result.trunc_common(0);
 
         if self.is_positive() && self.cmp_common(&result) != 0 {
@@ -336,10 +372,11 @@ impl NumericVar {
 
     /// Return the largest integer equal to or less than the argument
     /// on variable level
+    #[inline]
     fn floor_common(&self) -> Self {
         debug_assert!(!self.is_nan());
 
-        let mut result = self.clone();
+        let mut result = self.copy();
         result.trunc_common(0);
 
         if self.is_negative() && self.cmp_common(&result) != 0 {
@@ -378,6 +415,7 @@ impl NumericVar {
     }
 
     /// Reserve 1 digit for rounding.
+    #[inline]
     fn reserve_rounding_digit(&mut self) {
         if self.ndigits > 0 {
             self.data.reserve_rounding_digit(self.ndigits);
@@ -387,16 +425,17 @@ impl NumericVar {
     /// Set this numeric from other numeric.
     ///
     /// Note: If there are digits, we will reserve one more digit for rounding.
-    fn set_from_var(&mut self, value: &NumericVar) {
+    #[inline]
+    fn set_from_var(&mut self, value: &Numeric) {
         self.ndigits = value.ndigits;
         self.weight = value.weight;
         self.sign = value.sign;
         self.dscale = value.dscale;
 
-        if value.ndigits > 0 {
-            self.data = value.data.clone(self.ndigits);
-        } else {
+        if value.is_nan() {
             self.data.clear();
+        } else {
+            self.data = value.data.copy(self.ndigits);
         }
     }
 
@@ -425,6 +464,8 @@ impl NumericVar {
                 } else {
                     0
                 };
+
+                debug_assert!(dig >= 0);
 
                 // In the first digit, suppress extra leading decimal zeroes.
                 if d > 0 {
@@ -837,7 +878,7 @@ impl NumericVar {
                     0 => {
                         // ABS(self) == ABS(other)
                         // result = ZERO
-                        Self::scaled_zero(self.dscale.max(other.dscale))
+                        Self::zero_owned(self.dscale.max(other.dscale))
                     }
                     1 => {
                         // ABS(self) > ABS(other)
@@ -864,7 +905,7 @@ impl NumericVar {
                 0 => {
                     // ABS(self) == ABS(other)
                     // result = ZERO
-                    Self::scaled_zero(self.dscale.max(other.dscale))
+                    Self::zero_owned(self.dscale.max(other.dscale))
                 }
                 1 => {
                     // ABS(self) > ABS(other)
@@ -912,7 +953,7 @@ impl NumericVar {
                     0 => {
                         // ABS(self) == ABS(other)
                         // result = ZERO
-                        Self::scaled_zero(self.dscale.max(other.dscale))
+                        Self::zero_owned(self.dscale.max(other.dscale))
                     }
                     1 => {
                         // ABS(self) > ABS(other)
@@ -939,7 +980,7 @@ impl NumericVar {
                 0 => {
                     // ABS(self) == ABS(other)
                     // result = ZERO
-                    Self::scaled_zero(self.dscale.max(other.dscale))
+                    Self::zero_owned(self.dscale.max(other.dscale))
                 }
                 1 => {
                     // ABS(self) > ABS(other)
@@ -992,7 +1033,7 @@ impl NumericVar {
 
         if var1_ndigits == 0 || var2_ndigits == 0 {
             // one or both inputs is zero; so is result
-            return Self::scaled_zero(rscale);
+            return Self::zero_owned(rscale);
         }
 
         // Determine result sign and (maximum possible) weight
@@ -1022,7 +1063,7 @@ impl NumericVar {
 
         if res_ndigits < 3 {
             // All input digits will be ignored; so result is zero
-            return Self::scaled_zero(rscale);
+            return Self::zero_owned(rscale);
         }
 
         // We do the arithmetic in an array "dig[]" of signed int32's.  Since
@@ -1196,7 +1237,7 @@ impl NumericVar {
 
         // Now result zero check
         if var1_ndigits == 0 {
-            return Some(Self::scaled_zero(rscale));
+            return Some(Self::zero_owned(rscale));
         }
 
         // Determine the result sign, weight and number of digits to calculate.
@@ -1429,7 +1470,7 @@ impl NumericVar {
 
         // Now result zero check
         if var1_ndigits == 0 {
-            return Some(Self::scaled_zero(rscale));
+            return Some(Self::zero_owned(rscale));
         }
 
         // Determine the result sign, weight and number of digits to calculate
@@ -1722,11 +1763,11 @@ impl NumericVar {
         let local_rscale = rscale + 8;
 
         if self.ndigits == 0 {
-            return Self::scaled_zero(rscale);
+            return Self::zero_owned(rscale);
         }
 
         // Initialize the result to the first guess
-        let mut result = Self::zero();
+        let mut result = Self::zero_unowned();
         result.alloc_buf(1);
         result.digits_mut()[0] = {
             let i = self.digits()[0] / 2;
@@ -1738,7 +1779,7 @@ impl NumericVar {
         };
         result.weight = self.weight / 2;
 
-        let mut last_val = result.clone();
+        let mut last_val = result.copy();
 
         loop {
             let val = self
@@ -1751,7 +1792,7 @@ impl NumericVar {
                 break;
             }
 
-            last_val = result.clone();
+            last_val = result.copy();
         }
 
         // Round to requested precision
@@ -1776,12 +1817,12 @@ impl NumericVar {
                 // it as 1 because most programming languages do this. SQL:2003
                 // also requires a return value of 1.
                 // https://en.wikipedia.org/wiki/Exponentiation#Zero_to_the_zero_power
-                let mut result = ONE.clone();
+                let mut result = ONE.copy();
                 result.dscale = rscale; // no need to round
                 return Some(result);
             }
             1 => {
-                let mut result = self.clone();
+                let mut result = self.copy();
                 result.round_common(rscale);
                 return Some(result);
             }
@@ -1801,7 +1842,7 @@ impl NumericVar {
         // Handle the special case where the base is zero
         if self.ndigits == 0 {
             assert!(exp >= 0, DIVIDE_BY_ZERO_MSG);
-            return Some(Self::scaled_zero(rscale));
+            return Some(Self::zero_owned(rscale));
         }
 
         // The general case repeatedly multiplies base according to the bit
@@ -1833,7 +1874,7 @@ impl NumericVar {
         }
 
         if f + 1.0 < (-rscale) as f64 || f + 1.0 < (-NUMERIC_MAX_DISPLAY_SCALE) as f64 {
-            return Some(Self::scaled_zero(rscale));
+            return Some(Self::zero_owned(rscale));
         }
 
         // Approximate number of significant digits in the result.  Note that the
@@ -1849,12 +1890,12 @@ impl NumericVar {
         let mut neg = exp < 0;
         let mut mask = exp.abs();
 
-        let mut base_prod = self.clone();
+        let mut base_prod = self.copy();
 
         let mut result = if mask & 1 != 0 {
-            self.clone()
+            self.copy()
         } else {
-            ONE.clone()
+            ONE.copy()
         };
 
         loop {
@@ -1913,10 +1954,10 @@ impl NumericVar {
     /// Compute the natural log of `self`
     fn ln_common(&self, rscale: i32) -> Self {
         debug_assert!(!self.is_nan());
-        debug_assert!(self.cmp_common(&Self::zero()) > 0);
+        debug_assert!(self.cmp_common(&Self::zero_unowned()) > 0);
 
-        let mut x = self.clone();
-        let mut fact = TWO.clone();
+        let mut x = self.copy();
+        let mut fact = TWO.copy();
 
         // Reduce input into range 0.9 < x < 1.1 with repeated sqrt() operations.
         //
@@ -1953,10 +1994,10 @@ impl NumericVar {
         result = result
             .div_fast_common(&elem, local_rscale, true)
             .expect(DIVIDE_BY_ZERO_MSG);
-        let mut xx = result.clone();
+        let mut xx = result.copy();
         x = result.mul_common(&result, local_rscale);
 
-        let mut ni = ONE.clone();
+        let mut ni = ONE.copy();
 
         loop {
             ni = ni.add_common(&TWO);
@@ -1985,10 +2026,10 @@ impl NumericVar {
     /// Compute the logarithm of `self` in a given base.
     ///
     /// Note: this routine chooses dscale of the result.
-    fn log_common(&self, base: &NumericVar) -> Self {
+    fn log_common(&self, base: &Numeric) -> Self {
         debug_assert!(!self.is_nan());
         debug_assert!(!base.is_nan());
-        debug_assert!(self.cmp_common(&Self::zero()) > 0);
+        debug_assert!(self.cmp_common(&Self::zero_unowned()) > 0);
 
         // Estimated dweights of ln(base), ln(self) and the final result
         let ln_base_dweight = base.estimate_ln_dweight();
@@ -2027,7 +2068,7 @@ impl NumericVar {
     fn exp_common(&self, rscale: i32) -> Option<Self> {
         debug_assert!(!self.is_nan());
 
-        let mut x = self.clone();
+        let mut x = self.copy();
 
         // Estimate the dweight of the result using floating point arithmetic, so
         // that we can choose an appropriate local rscale for the calculation.
@@ -2047,7 +2088,7 @@ impl NumericVar {
         // Reduce x to the range -0.01 <= x <= 0.01 (approximately) by dividing by
         // 2^n, to improve the convergence rate of the Taylor series.
         if val.abs() > 0.01 {
-            let mut tmp = TWO.clone();
+            let mut tmp = TWO.copy();
 
             ndiv2 = 1;
             val /= 2.0;
@@ -2086,7 +2127,7 @@ impl NumericVar {
         let mut result = ONE.add_common(&x);
 
         let mut elem = x.mul_common(&x, local_rscale);
-        let mut ni = TWO.clone();
+        let mut ni = TWO.copy();
         elem = elem
             .div_fast_common(&ni, local_rscale, true)
             .expect(DIVIDE_BY_ZERO_MSG);
@@ -2174,7 +2215,7 @@ impl NumericVar {
     ///
     /// # Panics
     /// Panics if self is zero and exp is less than zero.
-    fn power_common(&self, exp: &NumericVar) -> Option<Self> {
+    fn power_common(&self, exp: &Numeric) -> Option<Self> {
         debug_assert!(!self.is_nan());
         debug_assert!(!exp.is_nan());
 
@@ -2195,8 +2236,8 @@ impl NumericVar {
 
         // This avoids log(0) for cases of 0 raised to a non-integer.  0 ^ 0 is
         // handled by power_int().
-        if self.cmp_common(&Self::zero()) == 0 {
-            return Some(Self::scaled_zero(NUMERIC_MIN_SIG_DIGITS));
+        if self.cmp_common(&Self::zero_unowned()) == 0 {
+            return Some(Self::zero_owned(NUMERIC_MIN_SIG_DIGITS));
         }
 
         // Decide on the scale for the ln() calculation.  For this we need an
@@ -2249,6 +2290,47 @@ impl NumericVar {
         ln_num.exp_common(rscale)
     }
 
+    /// Make `self` to be a result numeric.
+    /// We assume that `self` is not overflowed.
+    #[inline]
+    fn make_result_no_overflow(&mut self) {
+        debug_assert!(!self.is_nan());
+        debug_assert!(
+            self.weight <= NUMERIC_WEIGHT_MAX as i32
+                || self.weight >= NUMERIC_WEIGHT_MIN as i32
+                || self.dscale <= NUMERIC_DSCALE_MAX as i32
+                || self.dscale >= 0
+        );
+
+        self.strip();
+
+        self.data.set_header(
+            self.weight as i16,
+            self.dscale as u16,
+            self.sign as u16,
+            self.ndigits,
+        );
+    }
+
+    /// Make `self` to be a result numeric.
+    /// Returns true if overflows.
+    #[inline]
+    fn make_result(&mut self) -> bool {
+        debug_assert!(!self.is_nan());
+        debug_assert!(self.dscale >= 0);
+
+        if self.weight > NUMERIC_WEIGHT_MAX as i32
+            || self.weight < NUMERIC_WEIGHT_MIN as i32
+            || self.dscale > NUMERIC_DSCALE_MAX as i32
+        {
+            return true;
+        }
+
+        self.make_result_no_overflow();
+
+        false
+    }
+
     /// Negate this value.
     #[inline]
     pub fn negate(&mut self) {
@@ -2258,6 +2340,14 @@ impl NumericVar {
             } else if self.is_negative() {
                 self.sign = NUMERIC_POS;
             }
+            self.guarantee_owned();
+            // flush sign
+            self.data.set_header(
+                self.weight as i16,
+                self.dscale as u16,
+                self.sign as u16,
+                self.ndigits,
+            );
         }
     }
 
@@ -2273,13 +2363,17 @@ impl NumericVar {
         } else if self.ndigits == 0 {
             Self::zero()
         } else {
-            let mut result = ONE.clone();
+            let mut result = ONE.copy();
             result.sign = self.sign;
+            result.make_result_no_overflow();
             result
         }
     }
 
     /// Increment `self` by one.
+    ///
+    /// # Panics
+    /// Panics if overflows.
     #[inline]
     pub fn inc(&self) -> Self {
         if self.is_nan() {
@@ -2287,7 +2381,12 @@ impl NumericVar {
         }
 
         // Compute the result and return it
-        self.add_common(&ONE)
+        let mut result = self.add_common(&ONE);
+
+        let overflow = result.make_result();
+        assert!(!overflow, VALUE_OVERFLOW_MSG);
+
+        result
     }
 
     /// Checked numeric division.
@@ -2296,12 +2395,19 @@ impl NumericVar {
     pub fn checked_div(&self, other: &Self) -> Option<Self> {
         // Handle NaN
         if self.is_nan() || other.is_nan() {
-            return Some(NumericVar::nan());
+            return Some(Numeric::nan());
         }
 
         // Select scale for division result
         let rscale = self.select_div_scale(other);
-        NumericVar::div_common(self, other, rscale, true)
+        let mut result = Numeric::div_common(self, other, rscale, true);
+
+        if let Some(ref mut n) = result {
+            let overflow = n.make_result();
+            assert!(!overflow, VALUE_OVERFLOW_MSG);
+        }
+
+        result
     }
 
     /// Computes `self / other`, truncating the result to an integer.
@@ -2311,15 +2417,25 @@ impl NumericVar {
     pub fn checked_div_trunc(&self, other: &Self) -> Option<Self> {
         // Handle NaN
         if self.is_nan() || other.is_nan() {
-            return Some(NumericVar::nan());
+            return Some(Numeric::nan());
         }
 
-        NumericVar::div_common(self, other, 0, false)
+        let mut result = Numeric::div_common(self, other, 0, false);
+
+        if let Some(ref mut n) = result {
+            let overflow = n.make_result();
+            assert!(!overflow, VALUE_OVERFLOW_MSG);
+        }
+
+        result
     }
 
     /// Round a value to have `scale` digits after the decimal point.
     /// We allow negative `scale`, implying rounding before the decimal
     /// point --- Oracle interprets rounding that way.
+    ///
+    /// # Panics
+    /// Panics if overflows.
     #[inline]
     pub fn round(&mut self, scale: i32) {
         if self.is_nan() {
@@ -2331,12 +2447,16 @@ impl NumericVar {
             .max(-NUMERIC_MAX_DISPLAY_SCALE)
             .min(NUMERIC_MAX_DISPLAY_SCALE);
 
+        self.guarantee_owned();
         self.round_common(rscale);
 
         // We don't allow negative output dscale
         if rscale < 0 {
             self.dscale = 0;
         }
+
+        let overflow = self.make_result();
+        assert!(!overflow, VALUE_OVERFLOW_MSG);
     }
 
     /// Truncate a value to have `scale` digits after the decimal point.
@@ -2353,32 +2473,51 @@ impl NumericVar {
             .max(-NUMERIC_MAX_DISPLAY_SCALE)
             .min(NUMERIC_MAX_DISPLAY_SCALE);
 
+        self.guarantee_owned();
         self.trunc_common(rscale);
 
         // We don't allow negative output dscale
         if rscale < 0 {
             self.dscale = 0;
         }
+
+        self.make_result_no_overflow();
     }
 
     /// Return the smallest integer greater than or equal to the argument.
+    ///
+    /// # Panics
+    /// Panics if overflows.
     #[inline]
     pub fn ceil(&self) -> Self {
         if self.is_nan() {
             return Self::nan();
         }
 
-        self.ceil_common()
+        let mut result = self.ceil_common();
+
+        let overflow = result.make_result();
+        assert!(!overflow, VALUE_OVERFLOW_MSG);
+
+        result
     }
 
     /// Return the largest integer equal to or less than the argument.
+    ///
+    /// # Panics
+    /// Panics if overflows.
     #[inline]
     pub fn floor(&self) -> Self {
         if self.is_nan() {
             return Self::nan();
         }
 
-        self.floor_common()
+        let mut result = self.floor_common();
+
+        let overflow = result.make_result();
+        assert!(!overflow, VALUE_OVERFLOW_MSG);
+
+        result
     }
 
     /// Compute the absolute value of `self`.
@@ -2388,7 +2527,11 @@ impl NumericVar {
             return;
         }
 
-        self.sign = NUMERIC_POS;
+        if self.is_negative() {
+            self.sign = NUMERIC_POS;
+            self.guarantee_owned();
+            self.make_result_no_overflow();
+        }
     }
 
     /// Compute the square root of a numeric.
@@ -2418,7 +2561,11 @@ impl NumericVar {
             .max(NUMERIC_MIN_DISPLAY_SCALE)
             .min(NUMERIC_MAX_DISPLAY_SCALE);
 
-        self.sqrt_common(rscale)
+        let mut result = self.sqrt_common(rscale);
+
+        result.make_result_no_overflow();
+
+        result
     }
 
     /// Compute the natural logarithm of `self`.
@@ -2431,7 +2578,7 @@ impl NumericVar {
             return Self::nan();
         }
 
-        let cmp = self.cmp_common(&Self::zero());
+        let cmp = self.cmp_common(&Self::zero_unowned());
         assert_ne!(cmp, 0, "cannot take logarithm of zero");
         assert!(cmp > 0, "cannot take logarithm of a negative number");
 
@@ -2443,7 +2590,11 @@ impl NumericVar {
             .max(NUMERIC_MIN_DISPLAY_SCALE)
             .min(NUMERIC_MAX_DISPLAY_SCALE);
 
-        self.ln_common(rscale)
+        let mut result = self.ln_common(rscale);
+
+        result.make_result_no_overflow();
+
+        result
     }
 
     /// Compute the logarithm of `self` in a given base.
@@ -2456,17 +2607,21 @@ impl NumericVar {
             return Self::nan();
         }
 
-        let cmp = self.cmp_common(&Self::zero());
+        let cmp = self.cmp_common(&Self::zero_unowned());
         assert_ne!(cmp, 0, "cannot take logarithm of zero");
         assert!(cmp > 0, "cannot take logarithm of a negative number");
 
-        let cmp = base.cmp_common(&Self::zero());
+        let cmp = base.cmp_common(&Self::zero_unowned());
         assert_ne!(cmp, 0, "cannot take logarithm of zero");
         assert!(cmp > 0, "cannot take logarithm of a negative number");
 
         //  Call log_common() to compute and return the result;
         //	note it handles scale selection itself.
-        self.log_common(base)
+        let mut result = self.log_common(base);
+
+        result.make_result_no_overflow();
+
+        result
     }
 
     /// Compute the base 2 logarithm of `self`.
@@ -2490,6 +2645,7 @@ impl NumericVar {
     /// Raise e to the power of `self` (`e^(self)`).
     ///
     /// Returns `None` if overflows.
+    ///
     #[inline]
     pub fn exp(&self) -> Option<Self> {
         if self.is_nan() {
@@ -2517,7 +2673,16 @@ impl NumericVar {
             .min(NUMERIC_MAX_DISPLAY_SCALE);
 
         // Let exp_common() do the calculation and return the result.
-        self.exp_common(rscale)
+        let mut result = self.exp_common(rscale);
+
+        if let Some(ref mut n) = result {
+            let overflow = n.make_result();
+            if overflow {
+                return None;
+            }
+        }
+
+        result
     }
 
     /// Raise `self` to the power of `exp`.
@@ -2529,12 +2694,12 @@ impl NumericVar {
     ///   - `self` is zero and `exp` is less than zero
     ///   - `self` is less than zero and `exp` is not a integer.
     #[inline]
-    pub fn pow(&self, exp: &NumericVar) -> Option<Self> {
+    pub fn pow(&self, exp: &Numeric) -> Option<Self> {
         // Handle NaN cases.  We follow the POSIX spec for pow(3), which says that
         // NaN ^ 0 = 1, and 1 ^ NaN = 1, while all other cases with NaN inputs
         // yield NaN (with no error).
         if self.is_nan() {
-            if !exp.is_nan() && exp.cmp_common(&Self::zero()) == 0 {
+            if !exp.is_nan() && exp.cmp_common(&Self::zero_unowned()) == 0 {
                 return Some(ONE.clone());
             }
             return Some(Self::nan());
@@ -2545,20 +2710,30 @@ impl NumericVar {
             return Some(Self::nan());
         }
 
-        if self.cmp_common(&Self::zero()) == 0 && exp.cmp_common(&Self::zero()) < 0 {
+        if self.cmp_common(&Self::zero_unowned()) == 0 && exp.cmp_common(&Self::zero_unowned()) < 0
+        {
             panic!("zero raised to a negative power is undefined")
         }
 
-        let mut exp_trunc = exp.clone();
+        let mut exp_trunc = exp.copy();
         exp_trunc.trunc_common(0);
 
-        if self.cmp_common(&Self::zero()) < 0 && exp.cmp_common(&exp_trunc) != 0 {
+        if self.cmp_common(&Self::zero_unowned()) < 0 && exp.cmp_common(&exp_trunc) != 0 {
             panic!("a negative number raised to a non-integer power yields a complex result")
         }
 
         // Call power_common() to compute and return the result; note it handles
         // scale selection itself.
-        self.power_common(exp)
+        let mut result = self.power_common(exp);
+
+        if let Some(ref mut n) = result {
+            let overflow = n.make_result();
+            if overflow {
+                return None;
+            }
+        }
+
+        result
     }
 
     /// Compute factorial.
@@ -2575,12 +2750,14 @@ impl NumericVar {
             return None;
         }
 
-        let mut result: NumericVar = From::from(num);
+        let mut result: Numeric = From::from(num);
 
         for n in (2..num).rev() {
-            let fact: NumericVar = From::from(n);
+            let fact: Numeric = From::from(n);
             result = result.mul_common(&fact, 0);
         }
+
+        result.make_result_no_overflow();
 
         Some(result)
     }
@@ -2599,8 +2776,15 @@ impl NumericVar {
         let (precision, scale) = typmod.extract();
         let max_digits = precision - scale;
 
+        self.guarantee_owned();
+
         // Round to target scale (and set self.dscale)
         self.round_common(scale);
+
+        let overflow = self.make_result();
+        if overflow {
+            return true;
+        }
 
         // Check for overflow - note we can't do this before rounding, because
         // rounding could raise the weight.  Also note that the self's weight could
@@ -2668,42 +2852,77 @@ impl NumericVar {
 
         s
     }
-}
 
-impl Clone for NumericVar {
+    /// Extracts a byte slice contains the entire numeric.
     #[inline]
-    fn clone(&self) -> Self {
-        let data = if self.ndigits > 0 {
-            self.data.clone(self.ndigits)
-        } else {
-            NumericData::new()
-        };
+    pub fn as_bytes(&self) -> &[u8] {
+        if self.is_nan() {
+            return NumericData::nan_bytes();
+        }
 
+        self.data
+            .as_bytes(self.weight as i16, self.dscale as u16, self.ndigits)
+    }
+
+    /// Forms a numeric from a pointer, length and header offset.
+    ///
+    /// # Safety
+    /// * `ptr` can not be null.
+    /// * `length % 2 == 0`
+    /// * `offset % 2 == 0`
+    /// * `offset <= length`
+    #[inline]
+    pub unsafe fn from_raw_parts(ptr: *mut u8, length: u32, offset: u32, owned: bool) -> Self {
+        debug_assert!(!ptr.is_null());
+        debug_assert!(length % NUMERIC_DIGIT_SIZE == 0);
+        debug_assert!(offset % NUMERIC_DIGIT_SIZE == 0);
+        debug_assert!(offset <= length);
+        let data = NumericData::from_raw_parts(ptr, length, offset, owned);
+        let bin = NumericBinary::from_raw_parts(ptr, length, offset);
         Self {
-            ndigits: self.ndigits,
-            weight: self.weight,
-            sign: self.sign,
-            dscale: self.dscale,
+            ndigits: bin.ndigits(),
+            weight: bin.weight() as i32,
+            dscale: bin.dscale() as i32,
+            sign: bin.sign(),
             data,
         }
     }
 }
 
-impl fmt::Display for NumericVar {
+impl Clone for Numeric {
+    #[inline]
+    fn clone(&self) -> Self {
+        if self.is_nan() {
+            return Self::nan();
+        }
+
+        let mut result = self.copy();
+        result.data.set_header(
+            self.weight as i16,
+            self.dscale as u16,
+            self.sign as u16,
+            self.ndigits,
+        );
+
+        result
+    }
+}
+
+impl fmt::Display for Numeric {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         self.write(f)
     }
 }
 
-impl fmt::LowerExp for NumericVar {
+impl fmt::LowerExp for Numeric {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         let rscale = self.select_sci_scale();
         self.write_sci(f, rscale, true)
     }
 }
 
-impl fmt::UpperExp for NumericVar {
+impl fmt::UpperExp for Numeric {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         let rscale = self.select_sci_scale();
         self.write_sci(f, rscale, false)
@@ -2811,7 +3030,7 @@ impl fmt::Display for Typmod {
     }
 }
 
-impl Hash for NumericVar {
+impl Hash for Numeric {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // If it's NaN, don't try to hash the rest of the fields
         if self.is_nan() {
@@ -2867,10 +3086,19 @@ impl Hash for NumericVar {
 mod tests {
     use super::*;
 
+    // use this function to test `as_bytes` in other functions.
+    fn transform(val: &Numeric) -> Numeric {
+        let bytes = val.as_bytes();
+        let result = unsafe {
+            Numeric::from_raw_parts(bytes.as_ptr() as *mut u8, bytes.len() as u32, 0, false)
+        };
+        result
+    }
+
     fn assert_signum(val: &str, expected: &str) {
-        let val = val.parse::<NumericVar>().unwrap();
+        let val = val.parse::<Numeric>().unwrap();
         let result = val.signum();
-        assert_eq!(result.to_string(), expected);
+        assert_eq!(transform(&result).to_string(), expected);
     }
 
     #[test]
@@ -2882,9 +3110,9 @@ mod tests {
     }
 
     fn assert_inc(val: &str, expected: &str) {
-        let val = val.parse::<NumericVar>().unwrap();
+        let val = val.parse::<Numeric>().unwrap();
         let result = val.inc();
-        assert_eq!(result.to_string(), expected);
+        assert_eq!(transform(&result).to_string(), expected);
     }
 
     #[test]
@@ -2905,10 +3133,12 @@ mod tests {
     }
 
     fn assert_checked_div_trunc(val: &str, other: &str, expected: Option<&str>) {
-        let val = val.parse::<NumericVar>().unwrap();
-        let other = other.parse::<NumericVar>().unwrap();
+        let val = val.parse::<Numeric>().unwrap();
+        let other = other.parse::<Numeric>().unwrap();
 
-        let result = val.checked_div_trunc(&other).map(|n| n.to_string());
+        let result = val
+            .checked_div_trunc(&other)
+            .map(|n| transform(&n).to_string());
         let expected = expected.map(|s| s.to_owned());
 
         assert_eq!(result, expected);
@@ -2926,9 +3156,9 @@ mod tests {
     }
 
     fn assert_round(val: &str, rscale: i32, expected: &str) {
-        let mut numeric = val.parse::<NumericVar>().unwrap();
+        let mut numeric = val.parse::<Numeric>().unwrap();
         numeric.round(rscale);
-        assert_eq!(numeric.to_string(), expected);
+        assert_eq!(transform(&numeric).to_string(), expected);
     }
 
     #[test]
@@ -2953,9 +3183,9 @@ mod tests {
     }
 
     fn assert_trunc(val: &str, rscale: i32, expected: &str) {
-        let mut numeric = val.parse::<NumericVar>().unwrap();
+        let mut numeric = val.parse::<Numeric>().unwrap();
         numeric.trunc(rscale);
-        assert_eq!(numeric.to_string(), expected);
+        assert_eq!(transform(&numeric).to_string(), expected);
     }
 
     #[test]
@@ -2980,9 +3210,9 @@ mod tests {
     }
 
     fn assert_sqrt(val: &str, expected: &str) {
-        let var = val.parse::<NumericVar>().unwrap();
+        let var = val.parse::<Numeric>().unwrap();
         let result = var.sqrt();
-        assert_eq!(result.to_string(), expected);
+        assert_eq!(transform(&result).to_string(), expected);
     }
 
     #[test]
@@ -3016,14 +3246,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "cannot take square root of a negative number")]
     fn sqrt_negative() {
-        let var = "-1".parse::<NumericVar>().unwrap();
+        let var = "-1".parse::<Numeric>().unwrap();
         let _ = var.sqrt();
     }
 
     fn assert_ceil(val: &str, expected: &str) {
-        let var = val.parse::<NumericVar>().unwrap();
+        let var = val.parse::<Numeric>().unwrap();
         let result = var.ceil();
-        assert_eq!(result.to_string(), expected);
+        assert_eq!(transform(&result).to_string(), expected);
     }
 
     #[test]
@@ -3037,9 +3267,9 @@ mod tests {
     }
 
     fn assert_floor(val: &str, expected: &str) {
-        let var = val.parse::<NumericVar>().unwrap();
+        let var = val.parse::<Numeric>().unwrap();
         let result = var.floor();
-        assert_eq!(result.to_string(), expected);
+        assert_eq!(transform(&result).to_string(), expected);
     }
 
     #[test]
@@ -3053,9 +3283,9 @@ mod tests {
     }
 
     fn assert_abs(val: &str, expected: &str) {
-        let mut var = val.parse::<NumericVar>().unwrap();
+        let mut var = val.parse::<Numeric>().unwrap();
         var.abs();
-        assert_eq!(var.to_string(), expected);
+        assert_eq!(transform(&var).to_string(), expected);
     }
 
     #[test]
@@ -3067,9 +3297,9 @@ mod tests {
     }
 
     fn assert_write_sci(val: &str, scale: i32, expected: &str) {
-        let var = val.parse::<NumericVar>().unwrap();
+        let var = val.parse::<Numeric>().unwrap();
         let mut s = String::new();
-        var.write_sci(&mut s, scale, true).unwrap();
+        transform(&var).write_sci(&mut s, scale, true).unwrap();
         assert_eq!(s, expected);
     }
 
@@ -3105,8 +3335,8 @@ mod tests {
     }
 
     fn assert_sci(val: &str, expected: &str) {
-        let var = val.parse::<NumericVar>().unwrap();
-        let s = format!("{:E}", var);
+        let var = val.parse::<Numeric>().unwrap();
+        let s = format!("{:E}", transform(&var));
         assert_eq!(s, expected);
     }
 
@@ -3168,9 +3398,9 @@ mod tests {
     }
 
     fn assert_ln(val: &str, expected: &str) {
-        let var = val.parse::<NumericVar>().unwrap();
+        let var = val.parse::<Numeric>().unwrap();
         let ln = var.ln();
-        assert_eq!(ln.to_string(), expected);
+        assert_eq!(transform(&ln).to_string(), expected);
     }
 
     #[test]
@@ -3215,22 +3445,22 @@ mod tests {
     }
 
     fn assert_log(val: &str, base: &str, expected: &str) {
-        let var = val.parse::<NumericVar>().unwrap();
-        let base = base.parse::<NumericVar>().unwrap();
+        let var = val.parse::<Numeric>().unwrap();
+        let base = base.parse::<Numeric>().unwrap();
         let log = var.log(&base);
-        assert_eq!(log.to_string(), expected);
+        assert_eq!(transform(&log).to_string(), expected);
     }
 
     fn assert_log2(val: &str, expected: &str) {
-        let var = val.parse::<NumericVar>().unwrap();
+        let var = val.parse::<Numeric>().unwrap();
         let log2 = var.log2();
-        assert_eq!(log2.to_string(), expected);
+        assert_eq!(transform(&log2).to_string(), expected);
     }
 
     fn assert_log10(val: &str, expected: &str) {
-        let var = val.parse::<NumericVar>().unwrap();
+        let var = val.parse::<Numeric>().unwrap();
         let log2 = var.log10();
-        assert_eq!(log2.to_string(), expected);
+        assert_eq!(transform(&log2).to_string(), expected);
     }
 
     #[test]
@@ -3351,9 +3581,9 @@ mod tests {
     }
 
     fn assert_exp(val: &str, expected: &str) {
-        let var = val.parse::<NumericVar>().unwrap();
-        let ln = var.exp().expect("value overflows numeric format");
-        assert_eq!(ln.to_string(), expected);
+        let var = val.parse::<Numeric>().unwrap();
+        let exp = var.exp().expect("value overflows numeric format");
+        assert_eq!(transform(&exp).to_string(), expected);
     }
 
     #[test]
@@ -3407,10 +3637,10 @@ mod tests {
     }
 
     fn assert_pow(base: &str, exp: &str, expected: &str) {
-        let base = base.parse::<NumericVar>().unwrap();
-        let exp = exp.parse::<NumericVar>().unwrap();
+        let base = base.parse::<Numeric>().unwrap();
+        let exp = exp.parse::<Numeric>().unwrap();
         let pow = base.pow(&exp).expect("value overflows numeric format");
-        assert_eq!(pow.to_string(), expected);
+        assert_eq!(transform(&pow).to_string(), expected);
     }
 
     #[test]
@@ -3485,7 +3715,7 @@ mod tests {
 
     fn assert_fac(num: i64, expected: Option<&str>) {
         let expected = expected.map(|s| s.to_owned());
-        let result = NumericVar::factorial(num).map(|n| n.to_string());
+        let result = Numeric::factorial(num).map(|n| transform(&n).to_string());
         assert_eq!(result, expected);
     }
 
@@ -3537,11 +3767,11 @@ mod tests {
     }
 
     fn assert_apply_typmod(val: &str, typmod: Typmod, overflow: bool, expected: &str) {
-        let mut val = val.parse::<NumericVar>().unwrap();
+        let mut val = val.parse::<Numeric>().unwrap();
         let of = val.apply_typmod(typmod);
         assert_eq!(of, overflow);
         if !of {
-            assert_eq!(val.to_string(), expected);
+            assert_eq!(transform(&val).to_string(), expected);
         }
     }
 
@@ -3633,9 +3863,9 @@ mod tests {
     }
 
     fn assert_normalize(val: &str, expected: &str) {
-        let n = val.parse::<NumericVar>().unwrap();
-        assert_eq!(n.to_string(), val);
-        assert_eq!(n.normalize(), expected);
+        let n = val.parse::<Numeric>().unwrap();
+        assert_eq!(transform(&n).to_string(), val);
+        assert_eq!(transform(&n).normalize(), expected);
     }
 
     #[test]
@@ -3659,13 +3889,13 @@ mod tests {
     fn assert_hash(val1: &str, val2: &str, eq: bool) {
         use std::collections::hash_map::DefaultHasher;
 
-        let n1 = val1.parse::<NumericVar>().unwrap();
-        let n2 = val2.parse::<NumericVar>().unwrap();
+        let n1 = val1.parse::<Numeric>().unwrap();
+        let n2 = val2.parse::<Numeric>().unwrap();
 
         let mut hasher1 = DefaultHasher::new();
         let mut hasher2 = DefaultHasher::new();
-        n1.hash(&mut hasher1);
-        n2.hash(&mut hasher2);
+        transform(&n1).hash(&mut hasher1);
+        transform(&n2).hash(&mut hasher2);
 
         if eq {
             assert_eq!(n1, n2);
@@ -3690,5 +3920,73 @@ mod tests {
         assert_hash("10002000", "20001000", false);
         assert_hash("1000.2000", "2000.1000", false);
         assert_hash("1.0002", "2.0001", false);
+    }
+
+    fn assert_bytes(val: &str) {
+        let n = val.parse::<Numeric>().unwrap();
+        let bytes = n.as_bytes();
+
+        let n2 = unsafe {
+            Numeric::from_raw_parts(bytes.as_ptr() as *mut u8, bytes.len() as u32, 0, false)
+        };
+
+        assert_eq!(n2, n);
+    }
+
+    #[test]
+    fn bytes() {
+        assert_bytes("NaN");
+        assert_bytes("0");
+        assert_bytes("0.00000");
+        assert_bytes("123456789.987654321");
+        assert_bytes("170141183460469231731687303715884105727");
+        assert_bytes("-170141183460469231731687303715884105728");
+        assert_bytes("1e100");
+        assert_bytes("1e-100");
+    }
+
+    #[test]
+    fn owned() {
+        // negate
+        {
+            let n = "123.456".parse().unwrap();
+            let mut n2 = transform(&n);
+            n2.negate();
+            assert_eq!(n2.to_string(), "-123.456");
+        }
+
+        // round
+        {
+            let n = "123.456".parse().unwrap();
+            let mut n2 = transform(&n);
+            n2.round(2);
+            assert_eq!(n2.to_string(), "123.46");
+        }
+
+        // trunc
+        {
+            let n = "123.456".parse().unwrap();
+            let mut n2 = transform(&n);
+            n2.trunc(2);
+            assert_eq!(n2.to_string(), "123.45");
+        }
+
+        // abs
+        {
+            let n = "-123.456".parse().unwrap();
+            let mut n2 = transform(&n);
+            n2.abs();
+            assert_eq!(n2.to_string(), "123.456");
+        }
+
+        // apply typmod
+        {
+            let typmod = Typmod::new(6, 2).unwrap();
+
+            let n = "123.456".parse().unwrap();
+            let mut n2 = transform(&n);
+            n2.apply_typmod(typmod);
+            assert_eq!(n2.to_string(), "123.46");
+        }
     }
 }

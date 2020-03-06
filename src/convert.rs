@@ -2,8 +2,9 @@
 
 //! Numeric conversion utilities.
 
+use crate::data::{NumericDigit, NUMERIC_NEG, NUMERIC_POS};
 use crate::error::NumericTryFromError;
-use crate::{NumericDigit, NumericVar, NBASE, NUMERIC_NEG, NUMERIC_POS};
+use crate::{Numeric, NBASE};
 use std::convert::{TryFrom, TryInto};
 use std::ffi::CStr;
 use std::mem::MaybeUninit;
@@ -190,8 +191,12 @@ impl_signed!(i128, u128);
 
 /// Converts a signed integer to numeric.
 #[inline]
-fn from_signed<T: Signed>(val: T) -> NumericVar {
-    let mut var = NumericVar::nan();
+fn from_signed<T: Signed>(val: T) -> Numeric {
+    if val.is_zero() {
+        return Numeric::zero();
+    }
+
+    let mut var = Numeric::nan();
 
     if val.is_negative() {
         var.sign = NUMERIC_NEG;
@@ -200,36 +205,34 @@ fn from_signed<T: Signed>(val: T) -> NumericVar {
     }
 
     var.dscale = 0;
-    if val.is_zero() {
-        var.ndigits = 0;
-        var.weight = 0;
-        return var;
-    }
 
     set_var_from_unsigned(&mut var, val.abs());
+
+    var.make_result_no_overflow();
 
     var
 }
 
 /// Converts an unsigned integer to numeric.
 #[inline]
-fn from_unsigned<T: Unsigned>(val: T) -> NumericVar {
-    let mut var = NumericVar::nan();
+fn from_unsigned<T: Unsigned>(val: T) -> Numeric {
+    if val.is_zero() {
+        return Numeric::zero();
+    }
+
+    let mut var = Numeric::nan();
 
     var.sign = NUMERIC_POS;
     var.dscale = 0;
-    if val.is_zero() {
-        var.ndigits = 0;
-        var.weight = 0;
-        return var;
-    }
 
     set_var_from_unsigned(&mut var, val);
+
+    var.make_result_no_overflow();
 
     var
 }
 
-fn set_var_from_unsigned<T: Unsigned>(var: &mut NumericVar, val: T) {
+fn set_var_from_unsigned<T: Unsigned>(var: &mut Numeric, val: T) {
     var.alloc_buf(T::MAX_NDIGITS as i32);
 
     let mut u_val = val;
@@ -295,36 +298,38 @@ extern "C" {
 }
 
 /// Converts a floating-point number to numeric.
-fn from_floating<T: Floating>(f: T) -> Result<NumericVar, NumericTryFromError> {
+fn from_floating<T: Floating>(f: T) -> Result<Numeric, NumericTryFromError> {
     if f.is_nan() {
-        return Ok(NumericVar::nan());
+        return Ok(Numeric::nan());
     }
 
     if f.is_infinite() {
         return Err(NumericTryFromError::invalid());
     }
 
-    const SIZE: usize = 128;
+    const BUF_SIZE: usize = 128;
 
-    let n = unsafe {
-        let mut buf: [MaybeUninit<u8>; SIZE] = MaybeUninit::uninit().assume_init();
+    let mut n = unsafe {
+        let mut buf: [MaybeUninit<u8>; BUF_SIZE] = MaybeUninit::uninit().assume_init();
         snprintf(
             buf.as_mut_ptr() as *mut u8,
-            SIZE,
+            BUF_SIZE,
             "%.*g\0".as_ptr(),
             T::PRECISION,
             f.as_f64(),
         );
         let s = CStr::from_ptr(buf.as_ptr() as *const i8).to_string_lossy();
-        s.parse::<NumericVar>()?
+        s.parse::<Numeric>()?
     };
+
+    n.make_result_no_overflow();
 
     Ok(n)
 }
 
 macro_rules! impl_from_signed {
     ($t: ty) => {
-        impl From<$t> for NumericVar {
+        impl From<$t> for Numeric {
             #[inline]
             fn from(val: $t) -> Self {
                 from_signed(val)
@@ -335,7 +340,7 @@ macro_rules! impl_from_signed {
 
 macro_rules! impl_from_unsigned {
     ($t: ty) => {
-        impl From<$t> for NumericVar {
+        impl From<$t> for Numeric {
             #[inline]
             fn from(val: $t) -> Self {
                 from_unsigned(val)
@@ -355,7 +360,7 @@ impl_from_unsigned!(u32);
 impl_from_unsigned!(u64);
 impl_from_unsigned!(u128);
 
-impl From<bool> for NumericVar {
+impl From<bool> for Numeric {
     #[inline]
     fn from(b: bool) -> Self {
         let val = if b { 1u8 } else { 0u8 };
@@ -363,7 +368,7 @@ impl From<bool> for NumericVar {
     }
 }
 
-impl From<usize> for NumericVar {
+impl From<usize> for Numeric {
     #[inline]
     fn from(u: usize) -> Self {
         if std::mem::size_of::<usize>() == 8 {
@@ -376,7 +381,7 @@ impl From<usize> for NumericVar {
     }
 }
 
-impl From<isize> for NumericVar {
+impl From<isize> for Numeric {
     #[inline]
     fn from(i: isize) -> Self {
         if std::mem::size_of::<isize>() == 8 {
@@ -391,7 +396,7 @@ impl From<isize> for NumericVar {
 
 macro_rules! impl_try_from_floating {
     ($t: ty) => {
-        impl TryFrom<$t> for NumericVar {
+        impl TryFrom<$t> for Numeric {
             type Error = NumericTryFromError;
 
             #[inline]
@@ -406,7 +411,7 @@ impl_try_from_floating!(f32);
 impl_try_from_floating!(f64);
 
 /// Converts a numeric to signed integer.
-fn into_signed<T: Signed>(var: &mut NumericVar) -> Result<T, NumericTryFromError> {
+fn into_signed<T: Signed>(var: &mut Numeric) -> Result<T, NumericTryFromError> {
     // Ensure no overflowing happened when NumericDigit convert to T
     debug_assert!(std::mem::size_of::<T>() >= std::mem::size_of::<NumericDigit>());
     // Ensure enough space for carry.
@@ -466,7 +471,7 @@ fn into_signed<T: Signed>(var: &mut NumericVar) -> Result<T, NumericTryFromError
 }
 
 /// Converts a numeric to unsigned integer.
-fn into_unsigned<T: Unsigned>(var: &mut NumericVar) -> Result<T, NumericTryFromError> {
+fn into_unsigned<T: Unsigned>(var: &mut Numeric) -> Result<T, NumericTryFromError> {
     // Ensure no overflowing happened when NumericDigit convert to T
     debug_assert!(std::mem::size_of::<T>() >= std::mem::size_of::<NumericDigit>());
     // Ensure enough space for carry.
@@ -521,11 +526,11 @@ fn into_unsigned<T: Unsigned>(var: &mut NumericVar) -> Result<T, NumericTryFromE
 
 macro_rules! impl_try_from_numeric_for_signed {
     ($t: ty) => {
-        impl TryFrom<NumericVar> for $t {
+        impl TryFrom<Numeric> for $t {
             type Error = NumericTryFromError;
 
             #[inline]
-            fn try_from(mut value: NumericVar) -> Result<Self, Self::Error> {
+            fn try_from(mut value: Numeric) -> Result<Self, Self::Error> {
                 value.reserve_rounding_digit();
                 into_signed(&mut value)
             }
@@ -535,11 +540,11 @@ macro_rules! impl_try_from_numeric_for_signed {
 
 macro_rules! impl_try_from_numeric_for_unsigned {
     ($t: ty) => {
-        impl TryFrom<NumericVar> for $t {
+        impl TryFrom<Numeric> for $t {
             type Error = NumericTryFromError;
 
             #[inline]
-            fn try_from(mut value: NumericVar) -> Result<Self, Self::Error> {
+            fn try_from(mut value: Numeric) -> Result<Self, Self::Error> {
                 value.reserve_rounding_digit();
                 into_unsigned(&mut value)
             }
@@ -557,11 +562,11 @@ impl_try_from_numeric_for_unsigned!(u32);
 impl_try_from_numeric_for_unsigned!(u64);
 impl_try_from_numeric_for_unsigned!(u128);
 
-impl TryFrom<NumericVar> for i8 {
+impl TryFrom<Numeric> for i8 {
     type Error = NumericTryFromError;
 
     #[inline]
-    fn try_from(value: NumericVar) -> Result<Self, Self::Error> {
+    fn try_from(value: Numeric) -> Result<Self, Self::Error> {
         let val = TryInto::<i16>::try_into(value)?;
         if val > i8::max_value() as i16 || val < i8::min_value() as i16 {
             Err(NumericTryFromError::overflow())
@@ -571,11 +576,11 @@ impl TryFrom<NumericVar> for i8 {
     }
 }
 
-impl TryFrom<NumericVar> for u8 {
+impl TryFrom<Numeric> for u8 {
     type Error = NumericTryFromError;
 
     #[inline]
-    fn try_from(value: NumericVar) -> Result<Self, Self::Error> {
+    fn try_from(value: Numeric) -> Result<Self, Self::Error> {
         let val = TryInto::<u16>::try_into(value)?;
         if val > u8::max_value() as u16 {
             Err(NumericTryFromError::overflow())
@@ -585,11 +590,11 @@ impl TryFrom<NumericVar> for u8 {
     }
 }
 
-impl TryFrom<NumericVar> for usize {
+impl TryFrom<Numeric> for usize {
     type Error = NumericTryFromError;
 
     #[inline]
-    fn try_from(value: NumericVar) -> Result<Self, Self::Error> {
+    fn try_from(value: Numeric) -> Result<Self, Self::Error> {
         if std::mem::size_of::<usize>() == 8 {
             let val = TryInto::<u64>::try_into(value)?;
             Ok(val as usize)
@@ -602,11 +607,11 @@ impl TryFrom<NumericVar> for usize {
     }
 }
 
-impl TryFrom<NumericVar> for isize {
+impl TryFrom<Numeric> for isize {
     type Error = NumericTryFromError;
 
     #[inline]
-    fn try_from(value: NumericVar) -> Result<Self, Self::Error> {
+    fn try_from(value: Numeric) -> Result<Self, Self::Error> {
         if std::mem::size_of::<isize>() == 8 {
             let val = TryInto::<i64>::try_into(value)?;
             Ok(val as isize)
@@ -619,40 +624,40 @@ impl TryFrom<NumericVar> for isize {
     }
 }
 
-impl TryFrom<NumericVar> for f32 {
+impl TryFrom<Numeric> for f32 {
     type Error = NumericTryFromError;
 
     #[inline]
-    fn try_from(value: NumericVar) -> Result<Self, Self::Error> {
+    fn try_from(value: Numeric) -> Result<Self, Self::Error> {
         TryFrom::try_from(&value)
     }
 }
 
-impl TryFrom<NumericVar> for f64 {
+impl TryFrom<Numeric> for f64 {
     type Error = NumericTryFromError;
 
     #[inline]
-    fn try_from(value: NumericVar) -> Result<Self, Self::Error> {
+    fn try_from(value: Numeric) -> Result<Self, Self::Error> {
         TryFrom::try_from(&value)
     }
 }
 
-impl TryFrom<&NumericVar> for f32 {
+impl TryFrom<&Numeric> for f32 {
     type Error = NumericTryFromError;
 
     #[inline]
-    fn try_from(value: &NumericVar) -> Result<Self, Self::Error> {
+    fn try_from(value: &Numeric) -> Result<Self, Self::Error> {
         let s = value.to_string();
         let f = s.parse::<f32>()?;
         Ok(f)
     }
 }
 
-impl TryFrom<&NumericVar> for f64 {
+impl TryFrom<&Numeric> for f64 {
     type Error = NumericTryFromError;
 
     #[inline]
-    fn try_from(value: &NumericVar) -> Result<Self, Self::Error> {
+    fn try_from(value: &Numeric) -> Result<Self, Self::Error> {
         let s = value.to_string();
         let f = s.parse::<f64>()?;
         Ok(f)
@@ -661,12 +666,12 @@ impl TryFrom<&NumericVar> for f64 {
 
 macro_rules! impl_try_from_numeric_ref {
     ($t: ty) => {
-        impl TryFrom<&NumericVar> for $t {
+        impl TryFrom<&Numeric> for $t {
             type Error = NumericTryFromError;
 
             #[inline]
-            fn try_from(value: &NumericVar) -> Result<Self, Self::Error> {
-                let mut new_value = NumericVar::nan();
+            fn try_from(value: &Numeric) -> Result<Self, Self::Error> {
+                let mut new_value = Numeric::nan();
                 new_value.set_from_var(&value);
                 new_value.try_into()
             }
@@ -699,11 +704,11 @@ pub trait TryFromRef<T>: Sized {
 
 macro_rules! impl_try_from_ref_numeric {
     ($t: ty) => {
-        impl TryFromRef<NumericVar> for $t {
+        impl TryFromRef<Numeric> for $t {
             type Error = NumericTryFromError;
 
             #[inline]
-            fn try_from_ref(value: &NumericVar) -> Result<Self, Self::Error> {
+            fn try_from_ref(value: &Numeric) -> Result<Self, Self::Error> {
                 TryFrom::try_from(value)
             }
         }
@@ -731,9 +736,18 @@ mod tests {
     use std::convert::TryInto;
     use std::fmt::Debug;
 
-    fn assert_from<V: Into<NumericVar>, E: AsRef<str>>(val: V, expected: E) {
+    // use this function to test `as_bytes` in convert functions.
+    fn transform(val: &Numeric) -> Numeric {
+        let bytes = val.as_bytes();
+        let result = unsafe {
+            Numeric::from_raw_parts(bytes.as_ptr() as *mut u8, bytes.len() as u32, 0, false)
+        };
+        result
+    }
+
+    fn assert_from<V: Into<Numeric>, E: AsRef<str>>(val: V, expected: E) {
         let numeric = val.into();
-        assert_eq!(numeric.to_string(), expected.as_ref());
+        assert_eq!(transform(&numeric).to_string(), expected.as_ref());
     }
 
     #[test]
@@ -855,15 +869,15 @@ mod tests {
         }
     }
 
-    fn assert_try_from<V: TryInto<NumericVar, Error = NumericTryFromError>, E: AsRef<str>>(
+    fn assert_try_from<V: TryInto<Numeric, Error = NumericTryFromError>, E: AsRef<str>>(
         val: V,
         expected: E,
     ) {
         let numeric = val.try_into().unwrap();
-        assert_eq!(numeric.to_string(), expected.as_ref());
+        assert_eq!(transform(&numeric).to_string(), expected.as_ref());
     }
 
-    fn assert_try_from_invalid<V: TryInto<NumericVar, Error = NumericTryFromError>>(val: V) {
+    fn assert_try_from_invalid<V: TryInto<Numeric, Error = NumericTryFromError>>(val: V) {
         let result = val.try_into();
         assert_eq!(result.unwrap_err(), NumericTryFromError::invalid());
     }
@@ -923,15 +937,15 @@ mod tests {
         );
     }
 
-    fn try_into<S: AsRef<str>, T: TryFrom<NumericVar, Error = NumericTryFromError>>(s: S) -> T {
-        let n = s.as_ref().parse::<NumericVar>().unwrap();
+    fn try_into<S: AsRef<str>, T: TryFrom<Numeric, Error = NumericTryFromError>>(s: S) -> T {
+        let n = s.as_ref().parse::<Numeric>().unwrap();
         let val = TryInto::<T>::try_into(n).unwrap();
         val
     }
 
     fn assert_try_into<
         S: AsRef<str>,
-        T: TryFrom<NumericVar, Error = NumericTryFromError> + PartialEq + Debug,
+        T: TryFrom<Numeric, Error = NumericTryFromError> + PartialEq + Debug,
     >(
         s: S,
         expected: T,
@@ -940,18 +954,14 @@ mod tests {
         assert_eq!(val, expected);
     }
 
-    fn assert_try_into_overflow<T: TryFrom<NumericVar, Error = NumericTryFromError> + Debug>(
-        s: &str,
-    ) {
-        let n = s.parse::<NumericVar>().unwrap();
+    fn assert_try_into_overflow<T: TryFrom<Numeric, Error = NumericTryFromError> + Debug>(s: &str) {
+        let n = s.parse::<Numeric>().unwrap();
         let result = TryInto::<T>::try_into(n);
         assert_eq!(result.unwrap_err(), NumericTryFromError::overflow());
     }
 
-    fn assert_try_into_invalid<T: TryFrom<NumericVar, Error = NumericTryFromError> + Debug>(
-        s: &str,
-    ) {
-        let n = s.parse::<NumericVar>().unwrap();
+    fn assert_try_into_invalid<T: TryFrom<Numeric, Error = NumericTryFromError> + Debug>(s: &str) {
+        let n = s.parse::<Numeric>().unwrap();
         let result = TryInto::<T>::try_into(n);
         assert_eq!(result.unwrap_err(), NumericTryFromError::invalid());
     }
@@ -1149,17 +1159,15 @@ mod tests {
         assert!(try_into::<&str, f64>("NaN").is_nan());
     }
 
-    fn try_into_ref<S: AsRef<str>, T: TryFromRef<NumericVar, Error = NumericTryFromError>>(
-        s: S,
-    ) -> T {
-        let n = s.as_ref().parse::<NumericVar>().unwrap();
+    fn try_into_ref<S: AsRef<str>, T: TryFromRef<Numeric, Error = NumericTryFromError>>(s: S) -> T {
+        let n = s.as_ref().parse::<Numeric>().unwrap();
         let val = TryFromRef::try_from_ref(&n).unwrap();
         val
     }
 
     fn assert_try_into_ref<
         S: AsRef<str>,
-        T: TryFromRef<NumericVar, Error = NumericTryFromError> + PartialEq + Debug,
+        T: TryFromRef<Numeric, Error = NumericTryFromError> + PartialEq + Debug,
     >(
         s: S,
         expected: T,
@@ -1168,22 +1176,18 @@ mod tests {
         assert_eq!(val, expected);
     }
 
-    fn assert_try_into_ref_overflow<
-        T: TryFromRef<NumericVar, Error = NumericTryFromError> + Debug,
-    >(
+    fn assert_try_into_ref_overflow<T: TryFromRef<Numeric, Error = NumericTryFromError> + Debug>(
         s: &str,
     ) {
-        let n = s.parse::<NumericVar>().unwrap();
+        let n = s.parse::<Numeric>().unwrap();
         let result: Result<T, NumericTryFromError> = TryFromRef::try_from_ref(&n);
         assert_eq!(result.unwrap_err(), NumericTryFromError::overflow());
     }
 
-    fn assert_try_into_ref_invalid<
-        T: TryFromRef<NumericVar, Error = NumericTryFromError> + Debug,
-    >(
+    fn assert_try_into_ref_invalid<T: TryFromRef<Numeric, Error = NumericTryFromError> + Debug>(
         s: &str,
     ) {
-        let n = s.parse::<NumericVar>().unwrap();
+        let n = s.parse::<Numeric>().unwrap();
         let result: Result<T, NumericTryFromError> = TryFromRef::try_from_ref(&n);
         assert_eq!(result.unwrap_err(), NumericTryFromError::invalid());
     }
