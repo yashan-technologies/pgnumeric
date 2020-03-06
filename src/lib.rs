@@ -393,14 +393,14 @@ impl Numeric {
         let mut i = 0;
 
         // strip leading zeroes
-        while ndigits > 0 && digits[i] == 0 {
+        while ndigits > 0 && unsafe { *digits.get_unchecked(i) } == 0 {
             i += 1;
             self.weight -= 1;
             ndigits -= 1;
         }
 
         // strip trailing zeroes
-        while ndigits > 0 && digits[i + ndigits as usize - 1] == 0 {
+        while ndigits > 0 && unsafe { *digits.get_unchecked(i + ndigits as usize - 1) } == 0 {
             ndigits -= 1;
         }
 
