@@ -6,3 +6,10 @@ edition = "2018"
 
 [dependencies]
 lazy_static = "1.4"
+
+[dev-dependencies]
+criterion = "^0.3"
+
+[[bench]]
+name = "benchmark"
+harness = false
