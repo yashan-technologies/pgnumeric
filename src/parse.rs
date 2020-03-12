@@ -79,20 +79,14 @@ fn parse_decimal(s: &[u8]) -> Result<(Decimal, &[u8]), NumericParseError> {
 /// Carves off whitespaces up to the first non-whitespace character.
 #[inline]
 fn eat_whitespaces(s: &[u8]) -> &[u8] {
-    let mut i = 0;
-    while i < s.len() && s[i].is_ascii_whitespace() {
-        i += 1;
-    }
+    let i = s.iter().take_while(|&i| i.is_ascii_whitespace()).count();
     &s[i..]
 }
 
 /// Carves off decimal digits up to the first non-digit character.
 #[inline]
 fn eat_digits(s: &[u8]) -> (&[u8], &[u8]) {
-    let mut i = 0;
-    while i < s.len() && s[i].is_ascii_digit() {
-        i += 1;
-    }
+    let i = s.iter().take_while(|&i| i.is_ascii_digit()).count();
     (&s[..i], &s[i..])
 }
 
