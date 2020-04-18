@@ -2,7 +2,7 @@
 
 //! Implementing operators for numeric.
 
-use crate::{Numeric, DIVIDE_BY_ZERO_MSG, VALUE_OVERFLOW_MSG};
+use crate::num::{Numeric, NumericBuf, VALUE_OVERFLOW_MSG};
 use std::cmp::Ordering;
 use std::ops::{
     Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Rem, RemAssign, Sub, SubAssign,
@@ -10,359 +10,634 @@ use std::ops::{
 
 // The main implementation
 // &self + &other
-impl Add<&Numeric> for &Numeric {
-    type Output = Numeric;
+impl Add<&NumericBuf> for &NumericBuf {
+    type Output = NumericBuf;
 
-    #[allow(clippy::suspicious_arithmetic_impl)]
     #[inline]
-    fn add(self, other: &Numeric) -> Self::Output {
-        if self.is_nan() || other.is_nan() {
-            return Numeric::nan();
-        }
-
-        let mut result = self.add_common(other);
-
-        let overflow = result.make_result();
-        assert!(!overflow, VALUE_OVERFLOW_MSG);
-
-        result
+    fn add(self, other: &NumericBuf) -> Self::Output {
+        self.checked_add(other).expect(VALUE_OVERFLOW_MSG)
     }
 }
 
 // self + &other
-impl Add<&Numeric> for Numeric {
-    type Output = Numeric;
+impl Add<&NumericBuf> for NumericBuf {
+    type Output = NumericBuf;
 
     #[inline]
-    fn add(self, other: &Numeric) -> Self::Output {
+    fn add(self, other: &NumericBuf) -> Self::Output {
         Add::add(&self, other)
     }
 }
 
-// self + other
-impl Add<Numeric> for Numeric {
-    type Output = Numeric;
+impl Add<&NumericBuf> for &Numeric {
+    type Output = NumericBuf;
 
     #[inline]
-    fn add(self, other: Numeric) -> Self::Output {
+    fn add(self, other: &NumericBuf) -> Self::Output {
+        Add::add(self, other.as_numeric())
+    }
+}
+
+// self + other
+impl Add<NumericBuf> for NumericBuf {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn add(self, other: NumericBuf) -> Self::Output {
         Add::add(&self, &other)
     }
 }
 
 // &self + other
-impl Add<Numeric> for &Numeric {
-    type Output = Numeric;
+impl Add<NumericBuf> for &NumericBuf {
+    type Output = NumericBuf;
 
     #[inline]
-    fn add(self, other: Numeric) -> Self::Output {
+    fn add(self, other: NumericBuf) -> Self::Output {
         Add::add(self, &other)
     }
 }
 
-// &mut self += &other
-impl AddAssign<&Numeric> for Numeric {
+impl Add<NumericBuf> for &Numeric {
+    type Output = NumericBuf;
+
     #[inline]
-    fn add_assign(&mut self, other: &Numeric) {
-        let result = Add::add(self as &Numeric, other);
+    fn add(self, other: NumericBuf) -> Self::Output {
+        Add::add(self, other.as_numeric())
+    }
+}
+
+impl Add<&Numeric> for &NumericBuf {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn add(self, other: &Numeric) -> Self::Output {
+        Add::add(self.as_numeric(), other)
+    }
+}
+
+impl Add<&Numeric> for NumericBuf {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn add(self, other: &Numeric) -> Self::Output {
+        Add::add(self.as_numeric(), other)
+    }
+}
+
+impl Add<&Numeric> for &Numeric {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn add(self, other: &Numeric) -> Self::Output {
+        self.checked_add(other).expect(VALUE_OVERFLOW_MSG)
+    }
+}
+
+// &mut self += &other
+impl AddAssign<&NumericBuf> for NumericBuf {
+    #[inline]
+    fn add_assign(&mut self, other: &NumericBuf) {
+        let result = Add::add(self as &NumericBuf, other);
         *self = result;
     }
 }
 
 // &mut self += other
-impl AddAssign<Numeric> for Numeric {
+impl AddAssign<NumericBuf> for NumericBuf {
     #[inline]
-    fn add_assign(&mut self, other: Numeric) {
-        let result = Add::add(self as &Numeric, &other);
+    fn add_assign(&mut self, other: NumericBuf) {
+        let result = Add::add(self as &NumericBuf, &other);
+        *self = result;
+    }
+}
+
+impl AddAssign<&Numeric> for NumericBuf {
+    #[inline]
+    fn add_assign(&mut self, other: &Numeric) {
+        let result = Add::add(self.as_numeric(), other);
         *self = result;
     }
 }
 
 // The main implementation
 // &self - &other
-impl Sub<&Numeric> for &Numeric {
-    type Output = Numeric;
+impl Sub<&NumericBuf> for &NumericBuf {
+    type Output = NumericBuf;
 
-    #[allow(clippy::suspicious_arithmetic_impl)]
     #[inline]
-    fn sub(self, other: &Numeric) -> Self::Output {
-        if self.is_nan() || other.is_nan() {
-            return Numeric::nan();
-        }
-
-        let mut result = self.sub_common(other);
-
-        let overflow = result.make_result();
-        assert!(!overflow, VALUE_OVERFLOW_MSG);
-
-        result
+    fn sub(self, other: &NumericBuf) -> Self::Output {
+        self.checked_sub(other).expect(VALUE_OVERFLOW_MSG)
     }
 }
 
 // self - &other
-impl Sub<&Numeric> for Numeric {
-    type Output = Numeric;
+impl Sub<&NumericBuf> for NumericBuf {
+    type Output = NumericBuf;
 
     #[inline]
-    fn sub(self, other: &Numeric) -> Self::Output {
+    fn sub(self, other: &NumericBuf) -> Self::Output {
         Sub::sub(&self, other)
     }
 }
 
-// self - other
-impl Sub<Numeric> for Numeric {
-    type Output = Numeric;
+impl Sub<&NumericBuf> for &Numeric {
+    type Output = NumericBuf;
 
     #[inline]
-    fn sub(self, other: Numeric) -> Self::Output {
+    fn sub(self, other: &NumericBuf) -> Self::Output {
+        Sub::sub(self, other.as_numeric())
+    }
+}
+
+// self - other
+impl Sub<NumericBuf> for NumericBuf {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn sub(self, other: NumericBuf) -> Self::Output {
         Sub::sub(&self, &other)
     }
 }
 
 // &self - other
-impl Sub<Numeric> for &Numeric {
-    type Output = Numeric;
+impl Sub<NumericBuf> for &NumericBuf {
+    type Output = NumericBuf;
 
     #[inline]
-    fn sub(self, other: Numeric) -> Self::Output {
+    fn sub(self, other: NumericBuf) -> Self::Output {
         Sub::sub(self, &other)
     }
 }
 
-// &mut self -= &other
-impl SubAssign<&Numeric> for Numeric {
+impl Sub<NumericBuf> for &Numeric {
+    type Output = NumericBuf;
+
     #[inline]
-    fn sub_assign(&mut self, other: &Numeric) {
-        let result = Sub::sub(self as &Numeric, other);
+    fn sub(self, other: NumericBuf) -> Self::Output {
+        Sub::sub(self, other.as_numeric())
+    }
+}
+
+impl Sub<&Numeric> for &Numeric {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn sub(self, other: &Numeric) -> Self::Output {
+        self.checked_sub(other).expect(VALUE_OVERFLOW_MSG)
+    }
+}
+
+impl Sub<&Numeric> for NumericBuf {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn sub(self, other: &Numeric) -> Self::Output {
+        Sub::sub(self.as_numeric(), other)
+    }
+}
+
+impl Sub<&Numeric> for &NumericBuf {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn sub(self, other: &Numeric) -> Self::Output {
+        Sub::sub(self.as_numeric(), other)
+    }
+}
+
+// &mut self -= &other
+impl SubAssign<&NumericBuf> for NumericBuf {
+    #[inline]
+    fn sub_assign(&mut self, other: &NumericBuf) {
+        let result = Sub::sub(self as &NumericBuf, other);
         *self = result;
     }
 }
 
 // &mut self -= other
-impl SubAssign<Numeric> for Numeric {
+impl SubAssign<NumericBuf> for NumericBuf {
     #[inline]
-    fn sub_assign(&mut self, other: Numeric) {
-        let result = Sub::sub(self as &Numeric, &other);
+    fn sub_assign(&mut self, other: NumericBuf) {
+        let result = Sub::sub(self as &NumericBuf, &other);
+        *self = result;
+    }
+}
+
+impl SubAssign<&Numeric> for NumericBuf {
+    #[inline]
+    fn sub_assign(&mut self, other: &Numeric) {
+        let result = Sub::sub(self.as_numeric(), other);
         *self = result;
     }
 }
 
 // The main implementation
 // &self * &other
-impl Mul<&Numeric> for &Numeric {
-    type Output = Numeric;
+impl Mul<&NumericBuf> for &NumericBuf {
+    type Output = NumericBuf;
 
-    #[allow(clippy::suspicious_arithmetic_impl)]
     #[inline]
-    fn mul(self, other: &Numeric) -> Self::Output {
-        if self.is_nan() || other.is_nan() {
-            return Numeric::nan();
-        }
-
-        // we request exact representation for the product,
-        // rscale = sum(dscale of self, dscale of other)
-        let rscale = self.dscale + other.dscale;
-        let mut result = self.mul_common(other, rscale);
-
-        let overflow = result.make_result();
-        assert!(!overflow, VALUE_OVERFLOW_MSG);
-
-        result
+    fn mul(self, other: &NumericBuf) -> Self::Output {
+        self.checked_mul(other).expect(VALUE_OVERFLOW_MSG)
     }
 }
 
 // self * &other
-impl Mul<&Numeric> for Numeric {
-    type Output = Numeric;
+impl Mul<&NumericBuf> for NumericBuf {
+    type Output = NumericBuf;
 
     #[inline]
-    fn mul(self, other: &Numeric) -> Self::Output {
+    fn mul(self, other: &NumericBuf) -> Self::Output {
         Mul::mul(&self, other)
     }
 }
 
-// self * other
-impl Mul<Numeric> for Numeric {
-    type Output = Numeric;
+impl Mul<&NumericBuf> for &Numeric {
+    type Output = NumericBuf;
 
     #[inline]
-    fn mul(self, other: Numeric) -> Self::Output {
+    fn mul(self, other: &NumericBuf) -> Self::Output {
+        Mul::mul(self, other.as_numeric())
+    }
+}
+
+// self * other
+impl Mul<NumericBuf> for NumericBuf {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn mul(self, other: NumericBuf) -> Self::Output {
         Mul::mul(&self, &other)
     }
 }
 
 // &self * other
-impl Mul<Numeric> for &Numeric {
-    type Output = Numeric;
+impl Mul<NumericBuf> for &NumericBuf {
+    type Output = NumericBuf;
 
     #[inline]
-    fn mul(self, other: Numeric) -> Self::Output {
+    fn mul(self, other: NumericBuf) -> Self::Output {
         Mul::mul(self, &other)
     }
 }
 
-// &mut self *= &other
-impl MulAssign<&Numeric> for Numeric {
+impl Mul<NumericBuf> for &Numeric {
+    type Output = NumericBuf;
+
     #[inline]
-    fn mul_assign(&mut self, other: &Numeric) {
-        let result = Mul::mul(self as &Numeric, other);
+    fn mul(self, other: NumericBuf) -> Self::Output {
+        Mul::mul(self, other.as_numeric())
+    }
+}
+
+impl Mul<&Numeric> for &Numeric {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn mul(self, other: &Numeric) -> Self::Output {
+        self.checked_mul(other).expect(VALUE_OVERFLOW_MSG)
+    }
+}
+
+impl Mul<&Numeric> for NumericBuf {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn mul(self, other: &Numeric) -> Self::Output {
+        Mul::mul(self.as_numeric(), other)
+    }
+}
+
+impl Mul<&Numeric> for &NumericBuf {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn mul(self, other: &Numeric) -> Self::Output {
+        Mul::mul(self.as_numeric(), other)
+    }
+}
+
+// &mut self *= &other
+impl MulAssign<&NumericBuf> for NumericBuf {
+    #[inline]
+    fn mul_assign(&mut self, other: &NumericBuf) {
+        let result = Mul::mul(self as &NumericBuf, other);
         *self = result;
     }
 }
 
 // &mut self *= other
-impl MulAssign<Numeric> for Numeric {
+impl MulAssign<NumericBuf> for NumericBuf {
     #[inline]
-    fn mul_assign(&mut self, other: Numeric) {
-        let result = Mul::mul(self as &Numeric, &other);
+    fn mul_assign(&mut self, other: NumericBuf) {
+        let result = Mul::mul(self as &NumericBuf, &other);
+        *self = result;
+    }
+}
+
+impl MulAssign<&Numeric> for NumericBuf {
+    #[inline]
+    fn mul_assign(&mut self, other: &Numeric) {
+        let result = Mul::mul(self.as_numeric(), other);
         *self = result;
     }
 }
 
 // The main implementation
 // &self / &other
-impl Div<&Numeric> for &Numeric {
-    type Output = Numeric;
+impl Div<&NumericBuf> for &NumericBuf {
+    type Output = NumericBuf;
 
     #[inline]
-    fn div(self, other: &Numeric) -> Self::Output {
-        self.checked_div(other).expect(DIVIDE_BY_ZERO_MSG)
-    }
-}
+    fn div(self, other: &NumericBuf) -> Self::Output {
+        let (result, overflow) = self.overflowing_div(other);
+        if overflow {
+            panic!(VALUE_OVERFLOW_MSG)
+        }
 
-// &self / other
-impl Div<Numeric> for &Numeric {
-    type Output = Numeric;
-
-    #[inline]
-    fn div(self, other: Numeric) -> Self::Output {
-        Div::div(self, &other)
+        result
     }
 }
 
 // self / &other
-impl Div<&Numeric> for Numeric {
-    type Output = Numeric;
+impl Div<&NumericBuf> for NumericBuf {
+    type Output = NumericBuf;
 
     #[inline]
-    fn div(self, other: &Numeric) -> Self::Output {
+    fn div(self, other: &NumericBuf) -> Self::Output {
         Div::div(&self, other)
     }
 }
 
-// self / other
-impl Div<Numeric> for Numeric {
-    type Output = Numeric;
+impl Div<&NumericBuf> for &Numeric {
+    type Output = NumericBuf;
 
     #[inline]
-    fn div(self, other: Numeric) -> Self::Output {
+    fn div(self, other: &NumericBuf) -> Self::Output {
+        Div::div(self, other.as_numeric())
+    }
+}
+
+// &self / other
+impl Div<NumericBuf> for &NumericBuf {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn div(self, other: NumericBuf) -> Self::Output {
+        Div::div(self, &other)
+    }
+}
+
+// self / other
+impl Div<NumericBuf> for NumericBuf {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn div(self, other: NumericBuf) -> Self::Output {
         Div::div(&self, &other)
     }
 }
 
-// &mut self /= &other
-impl DivAssign<&Numeric> for Numeric {
+impl Div<NumericBuf> for &Numeric {
+    type Output = NumericBuf;
+
     #[inline]
-    fn div_assign(&mut self, other: &Numeric) {
-        let result = Div::div(self as &Numeric, other);
+    fn div(self, other: NumericBuf) -> Self::Output {
+        Div::div(self, other.as_numeric())
+    }
+}
+
+impl Div<&Numeric> for &NumericBuf {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn div(self, other: &Numeric) -> Self::Output {
+        Div::div(self.as_numeric(), other)
+    }
+}
+
+impl Div<&Numeric> for NumericBuf {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn div(self, other: &Numeric) -> Self::Output {
+        Div::div(self.as_numeric(), other)
+    }
+}
+
+impl Div<&Numeric> for &Numeric {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn div(self, other: &Numeric) -> Self::Output {
+        let (result, overflow) = self.overflowing_div(other);
+        if overflow {
+            panic!(VALUE_OVERFLOW_MSG)
+        }
+
+        result
+    }
+}
+
+// &mut self /= &other
+impl DivAssign<&NumericBuf> for NumericBuf {
+    #[inline]
+    fn div_assign(&mut self, other: &NumericBuf) {
+        let result = Div::div(self as &NumericBuf, other);
         *self = result;
     }
 }
 
 // &mut self /= other
-impl DivAssign<Numeric> for Numeric {
+impl DivAssign<NumericBuf> for NumericBuf {
     #[inline]
-    fn div_assign(&mut self, other: Numeric) {
-        let result = Div::div(self as &Numeric, &other);
+    fn div_assign(&mut self, other: NumericBuf) {
+        let result = Div::div(self as &NumericBuf, &other);
+        *self = result;
+    }
+}
+
+impl DivAssign<&Numeric> for NumericBuf {
+    #[inline]
+    fn div_assign(&mut self, other: &Numeric) {
+        let result = Div::div(self.as_numeric(), other);
         *self = result;
     }
 }
 
 // The main implementation
 // &self % &other
-impl Rem<&Numeric> for &Numeric {
-    type Output = Numeric;
+impl Rem<&NumericBuf> for &NumericBuf {
+    type Output = NumericBuf;
 
     #[inline]
-    fn rem(self, other: &Numeric) -> Self::Output {
-        if self.is_nan() || other.is_nan() {
-            return Numeric::nan();
+    fn rem(self, other: &NumericBuf) -> Self::Output {
+        let (result, overflow) = self.overflowing_rem(other);
+        if overflow {
+            panic!(VALUE_OVERFLOW_MSG)
         }
-
-        let mut result = self.mod_common(other).expect(DIVIDE_BY_ZERO_MSG);
-
-        result.make_result_no_overflow();
 
         result
     }
 }
 
-// &self % other
-impl Rem<Numeric> for &Numeric {
-    type Output = Numeric;
-
-    #[inline]
-    fn rem(self, other: Numeric) -> Self::Output {
-        Rem::rem(self, &other)
-    }
-}
-
 // self % &other
-impl Rem<&Numeric> for Numeric {
-    type Output = Numeric;
+impl Rem<&NumericBuf> for NumericBuf {
+    type Output = NumericBuf;
 
     #[inline]
-    fn rem(self, other: &Numeric) -> Self::Output {
+    fn rem(self, other: &NumericBuf) -> Self::Output {
         Rem::rem(&self, other)
     }
 }
 
-// self % other
-impl Rem<Numeric> for Numeric {
-    type Output = Numeric;
+impl Rem<&NumericBuf> for &Numeric {
+    type Output = NumericBuf;
 
     #[inline]
-    fn rem(self, other: Numeric) -> Self::Output {
+    fn rem(self, other: &NumericBuf) -> Self::Output {
+        Rem::rem(self, other.as_numeric())
+    }
+}
+
+// &self % other
+impl Rem<NumericBuf> for &NumericBuf {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn rem(self, other: NumericBuf) -> Self::Output {
+        Rem::rem(self, &other)
+    }
+}
+
+// self % other
+impl Rem<NumericBuf> for NumericBuf {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn rem(self, other: NumericBuf) -> Self::Output {
         Rem::rem(&self, &other)
     }
 }
 
-// &mut self %= &other
-impl RemAssign<&Numeric> for Numeric {
+impl Rem<NumericBuf> for &Numeric {
+    type Output = NumericBuf;
+
     #[inline]
-    fn rem_assign(&mut self, other: &Numeric) {
-        let result = Rem::rem(self as &Numeric, other);
+    fn rem(self, other: NumericBuf) -> Self::Output {
+        Rem::rem(self, other.as_numeric())
+    }
+}
+
+impl Rem<&Numeric> for &NumericBuf {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn rem(self, other: &Numeric) -> Self::Output {
+        Rem::rem(self.as_numeric(), other)
+    }
+}
+
+impl Rem<&Numeric> for NumericBuf {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn rem(self, other: &Numeric) -> Self::Output {
+        Rem::rem(self.as_numeric(), other)
+    }
+}
+
+impl Rem<&Numeric> for &Numeric {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn rem(self, other: &Numeric) -> Self::Output {
+        let (result, overflow) = self.overflowing_rem(other);
+        if overflow {
+            panic!(VALUE_OVERFLOW_MSG)
+        }
+
+        result
+    }
+}
+
+// &mut self %= &other
+impl RemAssign<&NumericBuf> for NumericBuf {
+    #[inline]
+    fn rem_assign(&mut self, other: &NumericBuf) {
+        let result = Rem::rem(self as &NumericBuf, other);
         *self = result;
     }
 }
 
 // &mut self %= other
-impl RemAssign<Numeric> for Numeric {
+impl RemAssign<NumericBuf> for NumericBuf {
     #[inline]
-    fn rem_assign(&mut self, other: Numeric) {
-        let result = Rem::rem(self as &Numeric, &other);
+    fn rem_assign(&mut self, other: NumericBuf) {
+        let result = Rem::rem(self as &NumericBuf, &other);
+        *self = result;
+    }
+}
+
+impl RemAssign<&Numeric> for NumericBuf {
+    #[inline]
+    fn rem_assign(&mut self, other: &Numeric) {
+        let result = Rem::rem(self.as_numeric(), other);
         *self = result;
     }
 }
 
 // -self
-impl Neg for Numeric {
-    type Output = Numeric;
+impl Neg for NumericBuf {
+    type Output = NumericBuf;
 
     #[inline]
     fn neg(mut self) -> Self::Output {
-        self.negate();
+        self.negate_mut();
         self
     }
 }
 
 // -&self
-impl Neg for &Numeric {
-    type Output = Numeric;
+impl Neg for &NumericBuf {
+    type Output = NumericBuf;
 
     #[inline]
     fn neg(self) -> Self::Output {
-        let n = self.clone();
-        Neg::neg(n)
+        self.negate()
+    }
+}
+
+impl Neg for &Numeric {
+    type Output = NumericBuf;
+
+    #[inline]
+    fn neg(self) -> Self::Output {
+        self.negate()
+    }
+}
+
+impl PartialEq<NumericBuf> for NumericBuf {
+    #[inline]
+    fn eq(&self, other: &NumericBuf) -> bool {
+        Ord::cmp(self, other) == Ordering::Equal
+    }
+}
+
+impl Eq for NumericBuf {}
+
+impl PartialOrd<NumericBuf> for NumericBuf {
+    #[inline]
+    fn partial_cmp(&self, other: &NumericBuf) -> Option<Ordering> {
+        Some(Ord::cmp(self, other))
+    }
+}
+
+impl Ord for NumericBuf {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        Numeric::cmp(self, other)
     }
 }
 
@@ -385,44 +660,79 @@ impl PartialOrd<Numeric> for Numeric {
 impl Ord for Numeric {
     #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
-        // We consider all NANs to be equal and larger than any non-NAN. This is
-        // somewhat arbitrary; the important thing is to have a consistent sort
-        // order.
-        if self.is_nan() {
-            if other.is_nan() {
-                Ordering::Equal // NAN == NAN
-            } else {
-                Ordering::Greater // NAN > non-NAN
-            }
-        } else if other.is_nan() {
-            Ordering::Less // non-NAN < NAN
-        } else {
-            let cmp = self.cmp_common(other);
-            match cmp {
-                _ if cmp > 0 => Ordering::Greater,
-                _ if cmp < 0 => Ordering::Less,
-                _ => Ordering::Equal,
-            }
-        }
+        Numeric::cmp(self, other)
+    }
+}
+
+impl PartialEq<Numeric> for NumericBuf {
+    #[inline]
+    fn eq(&self, other: &Numeric) -> bool {
+        self.as_numeric() == other
+    }
+}
+
+impl PartialEq<&Numeric> for NumericBuf {
+    #[inline]
+    fn eq(&self, other: &&Numeric) -> bool {
+        self.as_numeric() == *other
+    }
+}
+
+impl PartialEq<NumericBuf> for Numeric {
+    #[inline]
+    fn eq(&self, other: &NumericBuf) -> bool {
+        self == other.as_numeric()
+    }
+}
+
+impl PartialEq<NumericBuf> for &Numeric {
+    #[inline]
+    fn eq(&self, other: &NumericBuf) -> bool {
+        *self == other.as_numeric()
+    }
+}
+
+impl PartialOrd<Numeric> for NumericBuf {
+    #[inline]
+    fn partial_cmp(&self, other: &Numeric) -> Option<Ordering> {
+        self.as_numeric().partial_cmp(other)
+    }
+}
+
+impl PartialOrd<&Numeric> for NumericBuf {
+    #[inline]
+    fn partial_cmp(&self, other: &&Numeric) -> Option<Ordering> {
+        self.as_numeric().partial_cmp(*other)
+    }
+}
+
+impl PartialOrd<NumericBuf> for Numeric {
+    #[inline]
+    fn partial_cmp(&self, other: &NumericBuf) -> Option<Ordering> {
+        self.partial_cmp(other.as_numeric())
+    }
+}
+
+impl PartialOrd<NumericBuf> for &Numeric {
+    #[inline]
+    fn partial_cmp(&self, other: &NumericBuf) -> Option<Ordering> {
+        (*self).partial_cmp(other.as_numeric())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::Numeric;
+    use super::*;
+    use std::ops::Deref;
 
     // use this function to test `as_bytes` in ops.
-    fn transform(val: &Numeric) -> Numeric {
-        let bytes = val.as_bytes();
-        let result = unsafe {
-            Numeric::from_raw_parts(bytes.as_ptr() as *mut u8, bytes.len() as u32, 0, false)
-        };
-        result
+    fn transform(val: &NumericBuf) -> &Numeric {
+        val.deref()
     }
 
     fn assert_add(val1: &str, val2: &str, expected: &str) {
-        let var1 = val1.parse::<Numeric>().unwrap();
-        let var2 = val2.parse::<Numeric>().unwrap();
+        let var1 = val1.parse::<NumericBuf>().unwrap();
+        let var2 = val2.parse::<NumericBuf>().unwrap();
 
         let result1 = &var1 + &var2;
         assert_eq!(transform(&result1).to_string(), expected);
@@ -483,8 +793,8 @@ mod tests {
     }
 
     fn assert_sub(val1: &str, val2: &str, expected1: &str, expected2: &str) {
-        let var1 = val1.parse::<Numeric>().unwrap();
-        let var2 = val2.parse::<Numeric>().unwrap();
+        let var1 = val1.parse::<NumericBuf>().unwrap();
+        let var2 = val2.parse::<NumericBuf>().unwrap();
 
         let result1 = &var1 - &var2;
         assert_eq!(transform(&result1).to_string(), expected1);
@@ -576,8 +886,8 @@ mod tests {
     }
 
     fn assert_mul(val1: &str, val2: &str, expected: &str) {
-        let var1 = val1.parse::<Numeric>().unwrap();
-        let var2 = val2.parse::<Numeric>().unwrap();
+        let var1 = val1.parse::<NumericBuf>().unwrap();
+        let var2 = val2.parse::<NumericBuf>().unwrap();
 
         let result1 = &var1 * &var2;
         assert_eq!(transform(&result1).to_string(), expected);
@@ -638,8 +948,8 @@ mod tests {
     }
 
     fn assert_div(val1: &str, val2: &str, expected: &str) {
-        let var1 = val1.parse::<Numeric>().unwrap();
-        let var2 = val2.parse::<Numeric>().unwrap();
+        let var1 = val1.parse::<NumericBuf>().unwrap();
+        let var2 = val2.parse::<NumericBuf>().unwrap();
 
         let result1 = &var1 / &var2;
         assert_eq!(transform(&result1).to_string(), expected);
@@ -743,8 +1053,8 @@ mod tests {
     }
 
     fn assert_rem(val1: &str, val2: &str, expected: &str) {
-        let var1 = val1.parse::<Numeric>().unwrap();
-        let var2 = val2.parse::<Numeric>().unwrap();
+        let var1 = val1.parse::<NumericBuf>().unwrap();
+        let var2 = val2.parse::<NumericBuf>().unwrap();
 
         let result1 = &var1 % &var2;
         assert_eq!(transform(&result1).to_string(), expected);
@@ -813,15 +1123,15 @@ mod tests {
 
     macro_rules! assert_cmp {
         ($left: expr, $cmp: tt, $right: expr) => {{
-            let left = $left.parse::<Numeric>().unwrap();
-            let right = $right.parse::<Numeric>().unwrap();
+            let left = $left.parse::<NumericBuf>().unwrap();
+            let right = $right.parse::<NumericBuf>().unwrap();
             assert!(left $cmp right, "left = {}, right = {}", left, right);
         }};
     }
 
     fn assert_ord(val1: &str, val2: &str, expected: &str) {
-        let var1 = val1.parse::<Numeric>().unwrap();
-        let var2 = val2.parse::<Numeric>().unwrap();
+        let var1 = val1.parse::<NumericBuf>().unwrap();
+        let var2 = val2.parse::<NumericBuf>().unwrap();
 
         let result = std::cmp::max(var1, var2);
         assert_eq!(transform(&result).to_string(), expected);
@@ -869,9 +1179,9 @@ mod tests {
     }
 
     fn assert_neg(val: &str, expected: &str) {
-        let var = val.parse::<Numeric>().unwrap();
-        let expected_var = expected.parse::<Numeric>().unwrap();
-        assert_eq!(transform(&-&var), expected_var);
+        let var = val.parse::<NumericBuf>().unwrap();
+        let expected_var = expected.parse::<NumericBuf>().unwrap();
+        assert_eq!(transform(&-&var), expected_var.as_numeric());
     }
 
     #[test]

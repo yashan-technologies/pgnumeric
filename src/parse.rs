@@ -1,9 +1,13 @@
 // Copyright 2020 CoD Team
 
-//! Numeric parsing utilities
+//! Numeric parsing utilities.
 
-use crate::data::{NumericDigit, NUMERIC_NEG, NUMERIC_POS};
-use crate::{Numeric, NumericParseError, DEC_DIGITS};
+use crate::binary::{NumericDigit, NUMERIC_NEG, NUMERIC_POS};
+use crate::data::NumericData;
+use crate::error::NumericParseError;
+use crate::num::NumericBuf;
+use crate::var::{NumericVar, DEC_DIGITS};
+use smallvec::SmallVec;
 use std::convert::TryInto;
 use std::str::FromStr;
 
@@ -174,7 +178,7 @@ fn read_numeric_digit(s: &[u8]) -> NumericDigit {
 /// This function does not handle leading or trailing spaces, and it doesn't
 /// accept `NaN` either. It returns the remaining string bytes so that caller can
 /// check for trailing spaces/garbage if deemed necessary.
-fn set_from_str<'a>(num: &mut Numeric, s: &'a [u8]) -> Result<&'a [u8], NumericParseError> {
+fn parse_str(s: &[u8]) -> Result<(NumericVar<'static>, &[u8]), NumericParseError> {
     let (
         Decimal {
             sign,
@@ -203,8 +207,8 @@ fn set_from_str<'a>(num: &mut Numeric, s: &'a [u8]) -> Result<&'a [u8], NumericP
     let ndigits =
         (integral.len() as i32 + fractional.len() as i32 + offset + DEC_DIGITS - 1) / DEC_DIGITS;
 
-    let mut dec_digits: Vec<u8> =
-        Vec::with_capacity(integral.len() + fractional.len() + DEC_DIGITS as usize * 2);
+    let mut dec_digits: SmallVec<[u8; 128]> =
+        SmallVec::with_capacity(integral.len() + fractional.len() + DEC_DIGITS as usize * 2);
     // leading padding for digit alignment later
     dec_digits.extend_from_slice([0; DEC_DIGITS as usize].as_ref());
     dec_digits.extend(integral.iter().map(|&i| i - b'0'));
@@ -212,12 +216,8 @@ fn set_from_str<'a>(num: &mut Numeric, s: &'a [u8]) -> Result<&'a [u8], NumericP
     // trailing padding for digit alignment later
     dec_digits.extend_from_slice([0; DEC_DIGITS as usize].as_ref());
 
-    num.alloc_buf(ndigits);
-    num.weight = weight;
-    num.dscale = dec_scale;
-    num.sign = sign as u16;
-
-    let digits = num.digits_mut();
+    let mut data = NumericData::with_ndigits(ndigits);
+    let digits = data.digits_mut(ndigits);
     debug_assert_eq!(ndigits as usize, digits.len());
 
     let iter = (&dec_digits[(DEC_DIGITS - offset) as usize..])
@@ -228,17 +228,16 @@ fn set_from_str<'a>(num: &mut Numeric, s: &'a [u8]) -> Result<&'a [u8], NumericP
         digits[i] = digit;
     }
 
-    // Strip any leading/trailing zeroes, and normalize weight if zero.
-    num.strip();
+    let num = NumericVar::owned(ndigits, weight, dec_scale, sign as u16, data);
 
-    Ok(s)
+    Ok((num, s))
 }
 
 /// Parses a string slice and creates a number.
 ///
 /// This function handles leading or trailing spaces, and it
 /// accepts `NaN` either.
-fn from_str(s: &str) -> Result<Numeric, NumericParseError> {
+fn from_str(s: &str) -> Result<NumericBuf, NumericParseError> {
     let s = s.as_bytes();
     let s = eat_whitespaces(s);
     if s.is_empty() {
@@ -247,34 +246,27 @@ fn from_str(s: &str) -> Result<Numeric, NumericParseError> {
 
     let (is_nan, s) = extract_nan(s);
 
-    let mut numeric = if is_nan {
+    if is_nan {
         if s.iter().any(|n| !n.is_ascii_whitespace()) {
             return Err(NumericParseError::invalid());
         }
 
-        Numeric::nan()
+        Ok(NumericBuf::nan())
     } else {
-        let mut n = Numeric::nan();
-        let s = set_from_str(&mut n, s)?;
+        let (n, s) = parse_str(s)?;
 
         if s.iter().any(|n| !n.is_ascii_whitespace()) {
             return Err(NumericParseError::invalid());
         }
 
-        n
-    };
-
-    if !numeric.is_nan() {
-        let overflow = numeric.make_result();
-        if overflow {
-            return Err(NumericParseError::overflow());
+        match n.make_result() {
+            Some(result) => Ok(result),
+            None => Err(NumericParseError::overflow()),
         }
     }
-
-    Ok(numeric)
 }
 
-impl FromStr for Numeric {
+impl FromStr for NumericBuf {
     type Err = NumericParseError;
 
     #[inline]
@@ -285,20 +277,20 @@ impl FromStr for Numeric {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Numeric, NumericParseError};
+    use super::*;
 
     fn assert_parse_empty<S: AsRef<str>>(s: S) {
-        let result = s.as_ref().parse::<Numeric>();
+        let result = s.as_ref().parse::<NumericBuf>();
         assert_eq!(result.unwrap_err(), NumericParseError::empty());
     }
 
     fn assert_parse_invalid<S: AsRef<str>>(s: S) {
-        let result = s.as_ref().parse::<Numeric>();
+        let result = s.as_ref().parse::<NumericBuf>();
         assert_eq!(result.unwrap_err(), NumericParseError::invalid());
     }
 
     fn assert_parse_overflow<S: AsRef<str>>(s: S) {
-        let result = s.as_ref().parse::<Numeric>();
+        let result = s.as_ref().parse::<NumericBuf>();
         assert_eq!(result.unwrap_err(), NumericParseError::overflow());
     }
 
@@ -330,7 +322,7 @@ mod tests {
     }
 
     fn assert_parse<S: AsRef<str>, V: AsRef<str>>(s: S, expected: V) {
-        let numeric = s.as_ref().parse::<Numeric>().unwrap();
+        let numeric = s.as_ref().parse::<NumericBuf>().unwrap();
         assert_eq!(numeric.to_string(), expected.as_ref());
     }
 

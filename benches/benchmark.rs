@@ -3,10 +3,10 @@
 //! pgnumeric benchmark
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use pgnumeric::{Numeric, NumericTryFromError};
+use pgnumeric::{NumericBuf, NumericTryFromError};
 use std::convert::{TryFrom, TryInto};
 
-fn parse(s: &str) -> Numeric {
+fn parse(s: &str) -> NumericBuf {
     s.parse().unwrap()
 }
 
@@ -53,7 +53,7 @@ fn parse_benchmark(c: &mut Criterion) {
     });
 }
 
-fn into<'a, T: TryFrom<&'a Numeric, Error = NumericTryFromError>>(val: &'a Numeric) -> T {
+fn into<'a, T: TryFrom<&'a NumericBuf, Error = NumericTryFromError>>(val: &'a NumericBuf) -> T {
     TryFrom::try_from(val).unwrap()
 }
 
@@ -102,11 +102,11 @@ fn into_benchmark(c: &mut Criterion) {
     });
 }
 
-fn from<T: Into<Numeric>>(val: T) -> Numeric {
+fn from<T: Into<NumericBuf>>(val: T) -> NumericBuf {
     val.into()
 }
 
-fn try_from<T: TryInto<Numeric, Error = NumericTryFromError>>(val: T) -> Numeric {
+fn try_from<T: TryInto<NumericBuf, Error = NumericTryFromError>>(val: T) -> NumericBuf {
     val.try_into().unwrap()
 }
 
@@ -148,7 +148,7 @@ fn from_benchmark(c: &mut Criterion) {
     });
 }
 
-fn fmt(val: &Numeric) -> String {
+fn fmt(val: &NumericBuf) -> String {
     format!("{}", val)
 }
 
@@ -197,7 +197,7 @@ fn fmt_benchmark(c: &mut Criterion) {
     });
 }
 
-fn fmt_sci(val: &Numeric) -> String {
+fn fmt_sci(val: &NumericBuf) -> String {
     format!("{:e}", val)
 }
 
@@ -246,7 +246,7 @@ fn fmt_sci_benchmark(c: &mut Criterion) {
     });
 }
 
-fn add(x: &Numeric, y: &Numeric) -> Numeric {
+fn add(x: &NumericBuf, y: &NumericBuf) -> NumericBuf {
     x + y
 }
 
@@ -302,7 +302,7 @@ fn add_benchmark(c: &mut Criterion) {
     });
 }
 
-fn sub(x: &Numeric, y: &Numeric) -> Numeric {
+fn sub(x: &NumericBuf, y: &NumericBuf) -> NumericBuf {
     x - y
 }
 
@@ -358,7 +358,7 @@ fn sub_benchmark(c: &mut Criterion) {
     });
 }
 
-fn mul(x: &Numeric, y: &Numeric) -> Numeric {
+fn mul(x: &NumericBuf, y: &NumericBuf) -> NumericBuf {
     x * y
 }
 
@@ -414,7 +414,7 @@ fn mul_benchmark(c: &mut Criterion) {
     });
 }
 
-fn div(x: &Numeric, y: &Numeric) -> Numeric {
+fn div(x: &NumericBuf, y: &NumericBuf) -> NumericBuf {
     x / y
 }
 
@@ -470,7 +470,7 @@ fn div_benchmark(c: &mut Criterion) {
     });
 }
 
-fn rem(x: &Numeric, y: &Numeric) -> Numeric {
+fn rem(x: &NumericBuf, y: &NumericBuf) -> NumericBuf {
     x / y
 }
 
@@ -575,43 +575,43 @@ fn neg_mut_benchmark(c: &mut Criterion) {
     c.bench_function("neg_mut_u8", |b| {
         let mut val = parse("255");
         b.iter(|| {
-            black_box(&mut val).negate();
+            black_box(&mut val).negate_mut();
         })
     });
     c.bench_function("neg_mut_u16", |b| {
         let mut val = parse("65535");
         b.iter(|| {
-            black_box(&mut val).negate();
+            black_box(&mut val).negate_mut();
         })
     });
     c.bench_function("neg_mut_u32", |b| {
         let mut val = parse("4294967295");
         b.iter(|| {
-            black_box(&mut val).negate();
+            black_box(&mut val).negate_mut();
         })
     });
     c.bench_function("neg_mut_u64", |b| {
         let mut val = parse("18446744073709551615");
         b.iter(|| {
-            black_box(&mut val).negate();
+            black_box(&mut val).negate_mut();
         })
     });
     c.bench_function("neg_mut_u128", |b| {
         let mut val = parse("340282366920938463463374607431768211455");
         b.iter(|| {
-            black_box(&mut val).negate();
+            black_box(&mut val).negate_mut();
         })
     });
     c.bench_function("neg_mut_f32", |b| {
         let mut val = parse("1.23456789e10");
         b.iter(|| {
-            black_box(&mut val).negate();
+            black_box(&mut val).negate_mut();
         })
     });
     c.bench_function("neg_mut_f64", |b| {
         let mut val = parse("1.234567890123456789e10");
         b.iter(|| {
-            black_box(&mut val).negate();
+            black_box(&mut val).negate_mut();
         })
     });
 }
@@ -898,27 +898,27 @@ fn pow_benchmark(c: &mut Criterion) {
 fn fac_benchmark(c: &mut Criterion) {
     c.bench_function("fac_1", |b| {
         b.iter(|| {
-            let _n = Numeric::factorial(black_box(1));
+            let _n = NumericBuf::factorial(black_box(1));
         })
     });
     c.bench_function("fac_2", |b| {
         b.iter(|| {
-            let _n = Numeric::factorial(black_box(2));
+            let _n = NumericBuf::factorial(black_box(2));
         })
     });
     c.bench_function("fac_10", |b| {
         b.iter(|| {
-            let _n = Numeric::factorial(black_box(10));
+            let _n = NumericBuf::factorial(black_box(10));
         })
     });
     c.bench_function("fac_100", |b| {
         b.iter(|| {
-            let _n = Numeric::factorial(black_box(100));
+            let _n = NumericBuf::factorial(black_box(100));
         })
     });
     c.bench_function("fac_1000", |b| {
         b.iter(|| {
-            let _n = Numeric::factorial(black_box(1000));
+            let _n = NumericBuf::factorial(black_box(1000));
         })
     });
 }
@@ -927,43 +927,43 @@ fn round_benchmark(c: &mut Criterion) {
     c.bench_function("round_u8", |b| {
         let mut val = parse("255");
         b.iter(|| {
-            black_box(&mut val).round(0);
+            black_box(&mut val).round_mut(0);
         })
     });
     c.bench_function("round_u16", |b| {
         let mut val = parse("65535");
         b.iter(|| {
-            black_box(&mut val).round(0);
+            black_box(&mut val).round_mut(0);
         })
     });
     c.bench_function("round_u32", |b| {
         let mut val = parse("4294967295");
         b.iter(|| {
-            black_box(&mut val).round(0);
+            black_box(&mut val).round_mut(0);
         })
     });
     c.bench_function("round_u64", |b| {
         let mut val = parse("18446744073709551615");
         b.iter(|| {
-            black_box(&mut val).round(0);
+            black_box(&mut val).round_mut(0);
         })
     });
     c.bench_function("round_u128", |b| {
         let mut val = parse("340282366920938463463374607431768211455");
         b.iter(|| {
-            black_box(&mut val).round(0);
+            black_box(&mut val).round_mut(0);
         })
     });
     c.bench_function("round_f32", |b| {
         let mut val = parse("1.23456789e10");
         b.iter(|| {
-            black_box(&mut val).round(0);
+            black_box(&mut val).round_mut(0);
         })
     });
     c.bench_function("round_f64", |b| {
         let mut val = parse("1.234567890123456789e10");
         b.iter(|| {
-            black_box(&mut val).round(0);
+            black_box(&mut val).round_mut(0);
         })
     });
 }
@@ -972,43 +972,43 @@ fn trunc_benchmark(c: &mut Criterion) {
     c.bench_function("trunc_u8", |b| {
         let mut val = parse("255");
         b.iter(|| {
-            black_box(&mut val).trunc(0);
+            black_box(&mut val).trunc_mut(0);
         })
     });
     c.bench_function("trunc_u16", |b| {
         let mut val = parse("65535");
         b.iter(|| {
-            black_box(&mut val).trunc(0);
+            black_box(&mut val).trunc_mut(0);
         })
     });
     c.bench_function("trunc_u32", |b| {
         let mut val = parse("4294967295");
         b.iter(|| {
-            black_box(&mut val).trunc(0);
+            black_box(&mut val).trunc_mut(0);
         })
     });
     c.bench_function("trunc_u64", |b| {
         let mut val = parse("18446744073709551615");
         b.iter(|| {
-            black_box(&mut val).trunc(0);
+            black_box(&mut val).trunc_mut(0);
         })
     });
     c.bench_function("trunc_u128", |b| {
         let mut val = parse("340282366920938463463374607431768211455");
         b.iter(|| {
-            black_box(&mut val).trunc(0);
+            black_box(&mut val).trunc_mut(0);
         })
     });
     c.bench_function("trunc_f32", |b| {
         let mut val = parse("1.23456789e10");
         b.iter(|| {
-            black_box(&mut val).trunc(0);
+            black_box(&mut val).trunc_mut(0);
         })
     });
     c.bench_function("trunc_f64", |b| {
         let mut val = parse("1.234567890123456789e10");
         b.iter(|| {
-            black_box(&mut val).trunc(0);
+            black_box(&mut val).trunc_mut(0);
         })
     });
 }

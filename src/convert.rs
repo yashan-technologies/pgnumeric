@@ -2,9 +2,11 @@
 
 //! Numeric conversion utilities.
 
-use crate::data::{NumericDigit, NUMERIC_NEG, NUMERIC_POS};
+use crate::binary::{NumericDigit, NUMERIC_NEG, NUMERIC_POS};
+use crate::data::NumericData;
 use crate::error::NumericTryFromError;
-use crate::{Numeric, NBASE};
+use crate::num::{Numeric, NumericBuf};
+use crate::var::{NumericVar, NBASE};
 use std::convert::{TryFrom, TryInto};
 use std::ffi::CStr;
 use std::mem::MaybeUninit;
@@ -191,52 +193,35 @@ impl_signed!(i128, u128);
 
 /// Converts a signed integer to numeric.
 #[inline]
-fn from_signed<T: Signed>(val: T) -> Numeric {
+fn from_signed<T: Signed>(val: T) -> NumericVar<'static> {
     if val.is_zero() {
-        return Numeric::zero();
+        return NumericVar::zero();
     }
 
-    let mut var = Numeric::nan();
-
-    if val.is_negative() {
-        var.sign = NUMERIC_NEG;
+    let sign = if val.is_negative() {
+        NUMERIC_NEG
     } else {
-        var.sign = NUMERIC_POS;
-    }
+        NUMERIC_POS
+    };
 
-    var.dscale = 0;
-
-    set_var_from_unsigned(&mut var, val.abs());
-
-    var.make_result_no_overflow();
-
-    var
+    unsigned_to_var(val.abs(), sign)
 }
 
 /// Converts an unsigned integer to numeric.
 #[inline]
-fn from_unsigned<T: Unsigned>(val: T) -> Numeric {
+fn from_unsigned<T: Unsigned>(val: T) -> NumericVar<'static> {
     if val.is_zero() {
-        return Numeric::zero();
+        return NumericVar::zero();
     }
 
-    let mut var = Numeric::nan();
-
-    var.sign = NUMERIC_POS;
-    var.dscale = 0;
-
-    set_var_from_unsigned(&mut var, val);
-
-    var.make_result_no_overflow();
-
-    var
+    unsigned_to_var(val, NUMERIC_POS)
 }
 
-fn set_var_from_unsigned<T: Unsigned>(var: &mut Numeric, val: T) {
-    var.alloc_buf(T::MAX_NDIGITS as i32);
+fn unsigned_to_var<T: Unsigned>(val: T, sign: u16) -> NumericVar<'static> {
+    let mut data = NumericData::with_ndigits(T::MAX_NDIGITS as i32);
 
     let mut u_val = val;
-    let digits = var.digits_mut();
+    let digits = data.digits_mut(T::MAX_NDIGITS as i32);
     let mut ndigits = 0;
     let mut i = digits.len();
     loop {
@@ -252,9 +237,9 @@ fn set_var_from_unsigned<T: Unsigned>(var: &mut Numeric, val: T) {
             break;
         }
     }
-    var.data.offset_set(var.data.len() - ndigits as u32);
-    var.ndigits = ndigits;
-    var.weight = ndigits - 1;
+    data.offset_set(data.len() - ndigits as u32);
+
+    NumericVar::owned(ndigits, ndigits - 1, 0, sign, data)
 }
 
 /// Floating-point number.
@@ -298,9 +283,9 @@ extern "C" {
 }
 
 /// Converts a floating-point number to numeric.
-fn from_floating<T: Floating>(f: T) -> Result<Numeric, NumericTryFromError> {
+fn from_floating<T: Floating>(f: T) -> Result<NumericBuf, NumericTryFromError> {
     if f.is_nan() {
-        return Ok(Numeric::nan());
+        return Ok(NumericBuf::nan());
     }
 
     if f.is_infinite() {
@@ -309,7 +294,7 @@ fn from_floating<T: Floating>(f: T) -> Result<Numeric, NumericTryFromError> {
 
     const BUF_SIZE: usize = 128;
 
-    let mut n = unsafe {
+    unsafe {
         let mut buf: [MaybeUninit<u8>; BUF_SIZE] = MaybeUninit::uninit().assume_init();
         snprintf(
             buf.as_mut_ptr() as *mut u8,
@@ -319,20 +304,17 @@ fn from_floating<T: Floating>(f: T) -> Result<Numeric, NumericTryFromError> {
             f.as_f64(),
         );
         let s = CStr::from_ptr(buf.as_ptr() as *const i8).to_string_lossy();
-        s.parse::<Numeric>()?
-    };
-
-    n.make_result_no_overflow();
-
-    Ok(n)
+        let n = s.parse::<NumericBuf>()?;
+        Ok(n)
+    }
 }
 
 macro_rules! impl_from_signed {
     ($t: ty) => {
-        impl From<$t> for Numeric {
+        impl From<$t> for NumericBuf {
             #[inline]
             fn from(val: $t) -> Self {
-                from_signed(val)
+                from_signed(val).make_result_no_overflow()
             }
         }
     };
@@ -340,10 +322,10 @@ macro_rules! impl_from_signed {
 
 macro_rules! impl_from_unsigned {
     ($t: ty) => {
-        impl From<$t> for Numeric {
+        impl From<$t> for NumericBuf {
             #[inline]
             fn from(val: $t) -> Self {
-                from_unsigned(val)
+                from_unsigned(val).make_result_no_overflow()
             }
         }
     };
@@ -360,7 +342,7 @@ impl_from_unsigned!(u32);
 impl_from_unsigned!(u64);
 impl_from_unsigned!(u128);
 
-impl From<bool> for Numeric {
+impl From<bool> for NumericBuf {
     #[inline]
     fn from(b: bool) -> Self {
         let val = if b { 1u8 } else { 0u8 };
@@ -368,7 +350,7 @@ impl From<bool> for Numeric {
     }
 }
 
-impl From<usize> for Numeric {
+impl From<usize> for NumericBuf {
     #[inline]
     fn from(u: usize) -> Self {
         if std::mem::size_of::<usize>() == 8 {
@@ -381,7 +363,7 @@ impl From<usize> for Numeric {
     }
 }
 
-impl From<isize> for Numeric {
+impl From<isize> for NumericBuf {
     #[inline]
     fn from(i: isize) -> Self {
         if std::mem::size_of::<isize>() == 8 {
@@ -394,9 +376,16 @@ impl From<isize> for Numeric {
     }
 }
 
+impl<'a> From<i64> for NumericVar<'a> {
+    #[inline]
+    fn from(val: i64) -> Self {
+        from_signed(val)
+    }
+}
+
 macro_rules! impl_try_from_floating {
     ($t: ty) => {
-        impl TryFrom<$t> for Numeric {
+        impl TryFrom<$t> for NumericBuf {
             type Error = NumericTryFromError;
 
             #[inline]
@@ -411,11 +400,9 @@ impl_try_from_floating!(f32);
 impl_try_from_floating!(f64);
 
 /// Converts a numeric to signed integer.
-fn into_signed<T: Signed>(var: &mut Numeric) -> Result<T, NumericTryFromError> {
+fn into_signed<T: Signed>(var: &mut NumericVar) -> Result<T, NumericTryFromError> {
     // Ensure no overflowing happened when NumericDigit convert to T
     debug_assert!(std::mem::size_of::<T>() >= std::mem::size_of::<NumericDigit>());
-    // Ensure enough space for carry.
-    debug_assert!(var.data.offset() > 0 || var.ndigits == 0);
 
     if var.is_nan() {
         return Err(NumericTryFromError::invalid());
@@ -426,14 +413,14 @@ fn into_signed<T: Signed>(var: &mut Numeric) -> Result<T, NumericTryFromError> {
 
     // Check for zero input
     var.strip();
-    let ndigits = var.ndigits;
+    let ndigits = var.ndigits();
     if ndigits == 0 {
         return Ok(T::ZERO);
     }
 
     // For input like 10000000000, we must treat stripped digits as real.
     // So the loop assumes there are weight+1 digits before the decimal point.
-    let weight = var.weight;
+    let weight = var.weight();
     debug_assert!(weight >= 0);
     debug_assert!(ndigits <= weight + 1);
 
@@ -459,7 +446,7 @@ fn into_signed<T: Signed>(var: &mut Numeric) -> Result<T, NumericTryFromError> {
         }
     }
 
-    if var.sign != NUMERIC_NEG {
+    if !var.is_negative() {
         if val == T::MIN_VALUE {
             return Err(NumericTryFromError::overflow());
         }
@@ -471,11 +458,9 @@ fn into_signed<T: Signed>(var: &mut Numeric) -> Result<T, NumericTryFromError> {
 }
 
 /// Converts a numeric to unsigned integer.
-fn into_unsigned<T: Unsigned>(var: &mut Numeric) -> Result<T, NumericTryFromError> {
+fn into_unsigned<T: Unsigned>(var: &mut NumericVar) -> Result<T, NumericTryFromError> {
     // Ensure no overflowing happened when NumericDigit convert to T
     debug_assert!(std::mem::size_of::<T>() >= std::mem::size_of::<NumericDigit>());
-    // Ensure enough space for carry.
-    debug_assert!(var.data.offset() > 0 || var.ndigits == 0);
 
     if var.is_nan() {
         return Err(NumericTryFromError::invalid());
@@ -486,18 +471,18 @@ fn into_unsigned<T: Unsigned>(var: &mut Numeric) -> Result<T, NumericTryFromErro
 
     // Check for zero input
     var.strip();
-    let ndigits = var.ndigits;
+    let ndigits = var.ndigits();
     if ndigits == 0 {
         return Ok(T::ZERO);
     }
 
-    if var.sign == NUMERIC_NEG {
+    if var.is_negative() {
         return Err(NumericTryFromError::overflow());
     }
 
     // For input like 10000000000, we must treat stripped digits as real.
     // So the loop assumes there are weight+1 digits before the decimal point.
-    let weight = var.weight;
+    let weight = var.weight();
     debug_assert!(weight >= 0);
     debug_assert!(ndigits <= weight + 1);
 
@@ -524,49 +509,47 @@ fn into_unsigned<T: Unsigned>(var: &mut Numeric) -> Result<T, NumericTryFromErro
     Ok(val)
 }
 
-macro_rules! impl_try_from_numeric_for_signed {
+macro_rules! impl_try_from_var_for_signed {
     ($t: ty) => {
-        impl TryFrom<Numeric> for $t {
+        impl<'a> TryFrom<NumericVar<'a>> for $t {
             type Error = NumericTryFromError;
 
             #[inline]
-            fn try_from(mut value: Numeric) -> Result<Self, Self::Error> {
-                value.reserve_rounding_digit();
+            fn try_from(mut value: NumericVar<'a>) -> Result<Self, Self::Error> {
                 into_signed(&mut value)
             }
         }
     };
 }
 
-macro_rules! impl_try_from_numeric_for_unsigned {
+macro_rules! impl_try_from_var_for_unsigned {
     ($t: ty) => {
-        impl TryFrom<Numeric> for $t {
+        impl<'a> TryFrom<NumericVar<'a>> for $t {
             type Error = NumericTryFromError;
 
             #[inline]
-            fn try_from(mut value: Numeric) -> Result<Self, Self::Error> {
-                value.reserve_rounding_digit();
+            fn try_from(mut value: NumericVar) -> Result<Self, Self::Error> {
                 into_unsigned(&mut value)
             }
         }
     };
 }
 
-impl_try_from_numeric_for_signed!(i16);
-impl_try_from_numeric_for_signed!(i32);
-impl_try_from_numeric_for_signed!(i64);
-impl_try_from_numeric_for_signed!(i128);
+impl_try_from_var_for_signed!(i16);
+impl_try_from_var_for_signed!(i32);
+impl_try_from_var_for_signed!(i64);
+impl_try_from_var_for_signed!(i128);
 
-impl_try_from_numeric_for_unsigned!(u16);
-impl_try_from_numeric_for_unsigned!(u32);
-impl_try_from_numeric_for_unsigned!(u64);
-impl_try_from_numeric_for_unsigned!(u128);
+impl_try_from_var_for_unsigned!(u16);
+impl_try_from_var_for_unsigned!(u32);
+impl_try_from_var_for_unsigned!(u64);
+impl_try_from_var_for_unsigned!(u128);
 
-impl TryFrom<Numeric> for i8 {
+impl<'a> TryFrom<NumericVar<'a>> for i8 {
     type Error = NumericTryFromError;
 
     #[inline]
-    fn try_from(value: Numeric) -> Result<Self, Self::Error> {
+    fn try_from(value: NumericVar<'a>) -> Result<Self, Self::Error> {
         let val = TryInto::<i16>::try_into(value)?;
         if val > i8::max_value() as i16 || val < i8::min_value() as i16 {
             Err(NumericTryFromError::overflow())
@@ -576,11 +559,11 @@ impl TryFrom<Numeric> for i8 {
     }
 }
 
-impl TryFrom<Numeric> for u8 {
+impl<'a> TryFrom<NumericVar<'a>> for u8 {
     type Error = NumericTryFromError;
 
     #[inline]
-    fn try_from(value: Numeric) -> Result<Self, Self::Error> {
+    fn try_from(value: NumericVar<'a>) -> Result<Self, Self::Error> {
         let val = TryInto::<u16>::try_into(value)?;
         if val > u8::max_value() as u16 {
             Err(NumericTryFromError::overflow())
@@ -590,11 +573,11 @@ impl TryFrom<Numeric> for u8 {
     }
 }
 
-impl TryFrom<Numeric> for usize {
+impl<'a> TryFrom<NumericVar<'a>> for usize {
     type Error = NumericTryFromError;
 
     #[inline]
-    fn try_from(value: Numeric) -> Result<Self, Self::Error> {
+    fn try_from(value: NumericVar<'a>) -> Result<Self, Self::Error> {
         if std::mem::size_of::<usize>() == 8 {
             let val = TryInto::<u64>::try_into(value)?;
             Ok(val as usize)
@@ -607,11 +590,11 @@ impl TryFrom<Numeric> for usize {
     }
 }
 
-impl TryFrom<Numeric> for isize {
+impl<'a> TryFrom<NumericVar<'a>> for isize {
     type Error = NumericTryFromError;
 
     #[inline]
-    fn try_from(value: Numeric) -> Result<Self, Self::Error> {
+    fn try_from(value: NumericVar<'a>) -> Result<Self, Self::Error> {
         if std::mem::size_of::<isize>() == 8 {
             let val = TryInto::<i64>::try_into(value)?;
             Ok(val as isize)
@@ -624,128 +607,127 @@ impl TryFrom<Numeric> for isize {
     }
 }
 
-impl TryFrom<Numeric> for f32 {
+impl<'a> TryFrom<&NumericVar<'a>> for f32 {
     type Error = NumericTryFromError;
 
     #[inline]
-    fn try_from(value: Numeric) -> Result<Self, Self::Error> {
-        TryFrom::try_from(&value)
-    }
-}
-
-impl TryFrom<Numeric> for f64 {
-    type Error = NumericTryFromError;
-
-    #[inline]
-    fn try_from(value: Numeric) -> Result<Self, Self::Error> {
-        TryFrom::try_from(&value)
-    }
-}
-
-impl TryFrom<&Numeric> for f32 {
-    type Error = NumericTryFromError;
-
-    #[inline]
-    fn try_from(value: &Numeric) -> Result<Self, Self::Error> {
+    fn try_from(value: &NumericVar<'a>) -> Result<Self, Self::Error> {
         let s = value.to_string();
         let f = s.parse::<f32>()?;
         Ok(f)
     }
 }
 
-impl TryFrom<&Numeric> for f64 {
+impl<'a> TryFrom<&NumericVar<'a>> for f64 {
     type Error = NumericTryFromError;
 
     #[inline]
-    fn try_from(value: &Numeric) -> Result<Self, Self::Error> {
+    fn try_from(value: &NumericVar<'a>) -> Result<Self, Self::Error> {
         let s = value.to_string();
         let f = s.parse::<f64>()?;
         Ok(f)
     }
 }
 
-macro_rules! impl_try_from_numeric_ref {
+macro_rules! impl_try_from_numeric_to_integer {
     ($t: ty) => {
+        impl TryFrom<NumericBuf> for $t {
+            type Error = NumericTryFromError;
+
+            #[inline]
+            fn try_from(value: NumericBuf) -> Result<Self, Self::Error> {
+                TryFrom::try_from(value.into_var())
+            }
+        }
+        impl TryFrom<&NumericBuf> for $t {
+            type Error = NumericTryFromError;
+
+            #[inline]
+            fn try_from(value: &NumericBuf) -> Result<Self, Self::Error> {
+                let var = value.as_var().clone();
+                TryFrom::try_from(var)
+            }
+        }
         impl TryFrom<&Numeric> for $t {
             type Error = NumericTryFromError;
 
             #[inline]
             fn try_from(value: &Numeric) -> Result<Self, Self::Error> {
-                let mut new_value = Numeric::nan();
-                new_value.set_from_var(&value);
-                new_value.try_into()
+                let var = value.as_var().clone();
+                TryFrom::try_from(var)
             }
         }
-    };
-}
-
-impl_try_from_numeric_ref!(i8);
-impl_try_from_numeric_ref!(i16);
-impl_try_from_numeric_ref!(i32);
-impl_try_from_numeric_ref!(i64);
-impl_try_from_numeric_ref!(i128);
-impl_try_from_numeric_ref!(u8);
-impl_try_from_numeric_ref!(u16);
-impl_try_from_numeric_ref!(u32);
-impl_try_from_numeric_ref!(u64);
-impl_try_from_numeric_ref!(u128);
-impl_try_from_numeric_ref!(isize);
-impl_try_from_numeric_ref!(usize);
-
-/// Simple and safe type conversions that may fail in a controlled way under some circumstances.
-/// Used to do reference-to-value conversions while not consuming the input value.
-pub trait TryFromRef<T>: Sized {
-    /// The type returned in the event of a conversion error.
-    type Error;
-
-    /// Performs the conversion.
-    fn try_from_ref(value: &T) -> Result<Self, Self::Error>;
-}
-
-macro_rules! impl_try_from_ref_numeric {
-    ($t: ty) => {
-        impl TryFromRef<Numeric> for $t {
+        impl<'a> TryFrom<&NumericVar<'a>> for $t {
             type Error = NumericTryFromError;
 
             #[inline]
-            fn try_from_ref(value: &Numeric) -> Result<Self, Self::Error> {
-                TryFrom::try_from(value)
+            fn try_from(value: &NumericVar<'a>) -> Result<Self, Self::Error> {
+                let var = value.clone();
+                TryFrom::try_from(var)
             }
         }
     };
 }
 
-impl_try_from_ref_numeric!(i8);
-impl_try_from_ref_numeric!(i16);
-impl_try_from_ref_numeric!(i32);
-impl_try_from_ref_numeric!(i64);
-impl_try_from_ref_numeric!(i128);
-impl_try_from_ref_numeric!(u8);
-impl_try_from_ref_numeric!(u16);
-impl_try_from_ref_numeric!(u32);
-impl_try_from_ref_numeric!(u64);
-impl_try_from_ref_numeric!(u128);
-impl_try_from_ref_numeric!(f32);
-impl_try_from_ref_numeric!(f64);
-impl_try_from_ref_numeric!(isize);
-impl_try_from_ref_numeric!(usize);
+macro_rules! impl_try_from_numeric_to_floating {
+    ($t: ty) => {
+        impl TryFrom<NumericBuf> for $t {
+            type Error = NumericTryFromError;
+
+            #[inline]
+            fn try_from(value: NumericBuf) -> Result<Self, Self::Error> {
+                TryFrom::try_from(&value.into_var())
+            }
+        }
+        impl TryFrom<&NumericBuf> for $t {
+            type Error = NumericTryFromError;
+
+            #[inline]
+            fn try_from(value: &NumericBuf) -> Result<Self, Self::Error> {
+                TryFrom::try_from(&value.as_var())
+            }
+        }
+        impl TryFrom<&Numeric> for $t {
+            type Error = NumericTryFromError;
+
+            #[inline]
+            fn try_from(value: &Numeric) -> Result<Self, Self::Error> {
+                TryFrom::try_from(&value.as_var())
+            }
+        }
+    };
+}
+
+impl_try_from_numeric_to_integer!(i8);
+impl_try_from_numeric_to_integer!(i16);
+impl_try_from_numeric_to_integer!(i32);
+impl_try_from_numeric_to_integer!(i64);
+impl_try_from_numeric_to_integer!(i128);
+impl_try_from_numeric_to_integer!(u8);
+impl_try_from_numeric_to_integer!(u16);
+impl_try_from_numeric_to_integer!(u32);
+impl_try_from_numeric_to_integer!(u64);
+impl_try_from_numeric_to_integer!(u128);
+impl_try_from_numeric_to_integer!(isize);
+impl_try_from_numeric_to_integer!(usize);
+
+impl_try_from_numeric_to_floating!(f32);
+impl_try_from_numeric_to_floating!(f64);
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Numeric;
     use std::convert::TryInto;
     use std::fmt::Debug;
+    use std::ops::Deref;
 
     // use this function to test `as_bytes` in convert functions.
-    fn transform(val: &Numeric) -> Numeric {
-        let bytes = val.as_bytes();
-        let result = unsafe {
-            Numeric::from_raw_parts(bytes.as_ptr() as *mut u8, bytes.len() as u32, 0, false)
-        };
-        result
+    fn transform(val: &NumericBuf) -> &Numeric {
+        val.deref()
     }
 
-    fn assert_from<V: Into<Numeric>, E: AsRef<str>>(val: V, expected: E) {
+    fn assert_from<V: Into<NumericBuf>, E: AsRef<str>>(val: V, expected: E) {
         let numeric = val.into();
         assert_eq!(transform(&numeric).to_string(), expected.as_ref());
     }
@@ -869,7 +851,7 @@ mod tests {
         }
     }
 
-    fn assert_try_from<V: TryInto<Numeric, Error = NumericTryFromError>, E: AsRef<str>>(
+    fn assert_try_from<V: TryInto<NumericBuf, Error = NumericTryFromError>, E: AsRef<str>>(
         val: V,
         expected: E,
     ) {
@@ -877,7 +859,7 @@ mod tests {
         assert_eq!(transform(&numeric).to_string(), expected.as_ref());
     }
 
-    fn assert_try_from_invalid<V: TryInto<Numeric, Error = NumericTryFromError>>(val: V) {
+    fn assert_try_from_invalid<V: TryInto<NumericBuf, Error = NumericTryFromError>>(val: V) {
         let result = val.try_into();
         assert_eq!(result.unwrap_err(), NumericTryFromError::invalid());
     }
@@ -937,15 +919,15 @@ mod tests {
         );
     }
 
-    fn try_into<S: AsRef<str>, T: TryFrom<Numeric, Error = NumericTryFromError>>(s: S) -> T {
-        let n = s.as_ref().parse::<Numeric>().unwrap();
+    fn try_into<S: AsRef<str>, T: TryFrom<NumericBuf, Error = NumericTryFromError>>(s: S) -> T {
+        let n = s.as_ref().parse::<NumericBuf>().unwrap();
         let val = TryInto::<T>::try_into(n).unwrap();
         val
     }
 
     fn assert_try_into<
         S: AsRef<str>,
-        T: TryFrom<Numeric, Error = NumericTryFromError> + PartialEq + Debug,
+        T: TryFrom<NumericBuf, Error = NumericTryFromError> + PartialEq + Debug,
     >(
         s: S,
         expected: T,
@@ -954,14 +936,18 @@ mod tests {
         assert_eq!(val, expected);
     }
 
-    fn assert_try_into_overflow<T: TryFrom<Numeric, Error = NumericTryFromError> + Debug>(s: &str) {
-        let n = s.parse::<Numeric>().unwrap();
+    fn assert_try_into_overflow<T: TryFrom<NumericBuf, Error = NumericTryFromError> + Debug>(
+        s: &str,
+    ) {
+        let n = s.parse::<NumericBuf>().unwrap();
         let result = TryInto::<T>::try_into(n);
         assert_eq!(result.unwrap_err(), NumericTryFromError::overflow());
     }
 
-    fn assert_try_into_invalid<T: TryFrom<Numeric, Error = NumericTryFromError> + Debug>(s: &str) {
-        let n = s.parse::<Numeric>().unwrap();
+    fn assert_try_into_invalid<T: TryFrom<NumericBuf, Error = NumericTryFromError> + Debug>(
+        s: &str,
+    ) {
+        let n = s.parse::<NumericBuf>().unwrap();
         let result = TryInto::<T>::try_into(n);
         assert_eq!(result.unwrap_err(), NumericTryFromError::invalid());
     }
@@ -1157,231 +1143,5 @@ mod tests {
         assert_try_into("1e309", std::f64::INFINITY);
         assert_try_into("2.2250738585072014e-308", std::f64::MIN_POSITIVE);
         assert!(try_into::<&str, f64>("NaN").is_nan());
-    }
-
-    fn try_into_ref<S: AsRef<str>, T: TryFromRef<Numeric, Error = NumericTryFromError>>(s: S) -> T {
-        let n = s.as_ref().parse::<Numeric>().unwrap();
-        let val = TryFromRef::try_from_ref(&n).unwrap();
-        val
-    }
-
-    fn assert_try_into_ref<
-        S: AsRef<str>,
-        T: TryFromRef<Numeric, Error = NumericTryFromError> + PartialEq + Debug,
-    >(
-        s: S,
-        expected: T,
-    ) {
-        let val = try_into_ref::<S, T>(s);
-        assert_eq!(val, expected);
-    }
-
-    fn assert_try_into_ref_overflow<T: TryFromRef<Numeric, Error = NumericTryFromError> + Debug>(
-        s: &str,
-    ) {
-        let n = s.parse::<Numeric>().unwrap();
-        let result: Result<T, NumericTryFromError> = TryFromRef::try_from_ref(&n);
-        assert_eq!(result.unwrap_err(), NumericTryFromError::overflow());
-    }
-
-    fn assert_try_into_ref_invalid<T: TryFromRef<Numeric, Error = NumericTryFromError> + Debug>(
-        s: &str,
-    ) {
-        let n = s.parse::<Numeric>().unwrap();
-        let result: Result<T, NumericTryFromError> = TryFromRef::try_from_ref(&n);
-        assert_eq!(result.unwrap_err(), NumericTryFromError::invalid());
-    }
-
-    #[test]
-    fn into_i8_ref() {
-        assert_try_into_ref("0", 0i8);
-        assert_try_into_ref("1", 1i8);
-        assert_try_into_ref("-1", -1i8);
-        assert_try_into_ref("127", 127i8);
-        assert_try_into_ref("-128", -128);
-        assert_try_into_ref_overflow::<i8>("128");
-        assert_try_into_ref_overflow::<i8>("-129");
-        assert_try_into_ref_invalid::<i8>("NaN");
-    }
-
-    #[test]
-    fn into_i16_ref() {
-        assert_try_into_ref("0", 0i16);
-        assert_try_into_ref("1", 1i16);
-        assert_try_into_ref("-1", -1i16);
-        assert_try_into_ref("32767", 32767i16);
-        assert_try_into_ref("-32768", -32768i16);
-        assert_try_into_ref_overflow::<i16>("32768");
-        assert_try_into_ref_overflow::<i16>("-32769");
-        assert_try_into_ref_invalid::<i16>("NaN");
-    }
-
-    #[test]
-    fn into_i32_ref() {
-        assert_try_into_ref("0", 0i32);
-        assert_try_into_ref("1", 1i32);
-        assert_try_into_ref("-1", -1i32);
-        assert_try_into_ref("2147483647", 2147483647i32);
-        assert_try_into_ref("-2147483648", -2147483648i32);
-        assert_try_into_ref_overflow::<i32>("2147483648");
-        assert_try_into_ref_overflow::<i32>("-2147483649");
-        assert_try_into_ref_invalid::<i32>("NaN");
-    }
-
-    #[test]
-    fn into_i64_ref() {
-        assert_try_into_ref("0", 0i64);
-        assert_try_into_ref("1", 1i64);
-        assert_try_into_ref("-1", -1i64);
-        assert_try_into_ref("9223372036854775807", 9223372036854775807i64);
-        assert_try_into_ref("-9223372036854775808", -9223372036854775808i64);
-        assert_try_into_ref_overflow::<i64>("9223372036854775808");
-        assert_try_into_ref_overflow::<i64>("-9223372036854775809");
-        assert_try_into_ref_invalid::<i64>("NaN");
-    }
-
-    #[test]
-    fn into_i128_ref() {
-        assert_try_into_ref("0", 0i128);
-        assert_try_into_ref("1", 1i128);
-        assert_try_into_ref("-1", -1i128);
-        assert_try_into_ref(
-            "170141183460469231731687303715884105727",
-            170141183460469231731687303715884105727i128,
-        );
-        assert_try_into_ref(
-            "-170141183460469231731687303715884105728",
-            -170141183460469231731687303715884105728i128,
-        );
-        assert_try_into_ref_overflow::<i128>("170141183460469231731687303715884105728");
-        assert_try_into_ref_overflow::<i128>("-170141183460469231731687303715884105729");
-        assert_try_into_ref_invalid::<i128>("NaN");
-    }
-
-    #[test]
-    fn into_u8_ref() {
-        assert_try_into_ref("0", 0u8);
-        assert_try_into_ref("1", 1u8);
-        assert_try_into_ref("255", 255u8);
-        assert_try_into_ref_overflow::<u8>("256");
-        assert_try_into_ref_overflow::<u8>("-1");
-        assert_try_into_ref_invalid::<u8>("NaN");
-    }
-
-    #[test]
-    fn into_u16_ref() {
-        assert_try_into_ref("0", 0u16);
-        assert_try_into_ref("1", 1u16);
-        assert_try_into_ref("65535", 65535u16);
-        assert_try_into_ref_overflow::<u16>("65536");
-        assert_try_into_ref_overflow::<u16>("-1");
-        assert_try_into_ref_invalid::<u16>("NaN");
-    }
-
-    #[test]
-    fn into_u32_ref() {
-        assert_try_into_ref("0", 0u32);
-        assert_try_into_ref("1", 1u32);
-        assert_try_into_ref("4294967295", 4294967295u32);
-        assert_try_into_ref_overflow::<u32>("4294967296");
-        assert_try_into_ref_overflow::<u32>("-1");
-        assert_try_into_ref_invalid::<u32>("NaN");
-    }
-
-    #[test]
-    fn into_u64_ref() {
-        assert_try_into_ref("0", 0u64);
-        assert_try_into_ref("1", 1u64);
-        assert_try_into_ref("18446744073709551615", 18446744073709551615u64);
-        assert_try_into_ref_overflow::<u64>("18446744073709551616");
-        assert_try_into_ref_overflow::<u64>("-1");
-        assert_try_into_ref_invalid::<u64>("NaN");
-    }
-
-    #[test]
-    fn into_u128_ref() {
-        assert_try_into_ref("0", 0u128);
-        assert_try_into_ref("1", 1u128);
-        assert_try_into_ref(
-            "340282366920938463463374607431768211455",
-            340282366920938463463374607431768211455u128,
-        );
-        assert_try_into_ref_overflow::<u128>("340282366920938463463374607431768211456");
-        assert_try_into_ref_overflow::<u128>("-1");
-        assert_try_into_ref_invalid::<u128>("NaN");
-    }
-
-    #[test]
-    fn into_usize_ref() {
-        assert_try_into_ref("0", 0usize);
-        assert_try_into_ref("1", 1usize);
-        if std::mem::size_of::<usize>() == 8 {
-            assert_try_into_ref("18446744073709551615", 18446744073709551615usize);
-            assert_try_into_ref_overflow::<usize>("18446744073709551616");
-            assert_try_into_ref_overflow::<usize>("-1");
-        } else if std::mem::size_of::<usize>() == 4 {
-            assert_try_into_ref("4294967295", 4294967295usize);
-            assert_try_into_ref_overflow::<usize>("4294967296");
-            assert_try_into_ref_overflow::<usize>("-1");
-        }
-        assert_try_into_ref_invalid::<usize>("NaN");
-    }
-
-    #[test]
-    fn into_isize_ref() {
-        assert_try_into_ref("0", 0isize);
-        assert_try_into_ref("1", 1isize);
-        assert_try_into_ref("-1", -1isize);
-        if std::mem::size_of::<isize>() == 8 {
-            assert_try_into_ref("9223372036854775807", 9223372036854775807isize);
-            assert_try_into_ref("-9223372036854775808", -9223372036854775808isize);
-            assert_try_into_ref_overflow::<isize>("9223372036854775808");
-            assert_try_into_ref_overflow::<isize>("-9223372036854775809");
-        } else if std::mem::size_of::<isize>() == 4 {
-            assert_try_into_ref("2147483647", 2147483647isize);
-            assert_try_into_ref("-2147483648", -2147483648isize);
-            assert_try_into_ref_overflow::<isize>("2147483648");
-            assert_try_into_ref_overflow::<isize>("-2147483649");
-        }
-        assert_try_into_ref_invalid::<isize>("NaN");
-    }
-
-    #[test]
-    fn into_f32_ref() {
-        assert_try_into_ref("0", 0f32);
-        assert_try_into_ref("1", 1f32);
-        assert_try_into_ref("0.000001", 0.000001f32);
-        assert_try_into_ref("0.0000001", 0.0000001f32);
-        assert_try_into_ref("0.555555", 0.555555f32);
-        assert_try_into_ref("0.55555599", 0.555556f32);
-        assert_try_into_ref("0.999999", 0.999999f32);
-        assert_try_into_ref("0.99999999", 1.0f32);
-        assert_try_into_ref("1.00001", 1.00001f32);
-        assert_try_into_ref("1.00000001", 1.0f32);
-        assert_try_into_ref("1.23456789e10", 1.23456789e10f32);
-        assert_try_into_ref("1.23456789e-10", 1.23456789e-10f32);
-        assert_try_into_ref("3.40282347e+38", std::f32::MAX);
-        assert_try_into_ref("-3.40282347e+38", std::f32::MIN);
-        assert_try_into_ref("1e39", std::f32::INFINITY);
-        assert_try_into_ref("1.17549435e-38", std::f32::MIN_POSITIVE);
-        assert!(try_into_ref::<&str, f32>("NaN").is_nan());
-    }
-
-    #[test]
-    fn into_f64_ref() {
-        assert_try_into_ref("0", 0f64);
-        assert_try_into_ref("1", 1f64);
-        assert_try_into_ref("0.000000000000001", 0.000000000000001f64);
-        assert_try_into_ref("0.555555555555555", 0.555555555555555f64);
-        assert_try_into_ref("0.55555555555555599", 0.555555555555556f64);
-        assert_try_into_ref("0.999999999999999", 0.999999999999999f64);
-        assert_try_into_ref("0.99999999999999999", 1.0f64);
-        assert_try_into_ref("1.00000000000001", 1.00000000000001f64);
-        assert_try_into_ref("1.0000000000000001", 1.0f64);
-        assert_try_into_ref("1.7976931348623157e+308", std::f64::MAX);
-        assert_try_into_ref("-1.7976931348623157e+308", std::f64::MIN);
-        assert_try_into_ref("1e309", std::f64::INFINITY);
-        assert_try_into_ref("2.2250738585072014e-308", std::f64::MIN_POSITIVE);
-        assert!(try_into_ref::<&str, f64>("NaN").is_nan());
     }
 }
