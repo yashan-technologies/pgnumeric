@@ -31,6 +31,7 @@
 // The weight is arbitrary in that case, but we normally set it to zero.
 
 use crate::var::NumericVar;
+use cfg_if::cfg_if;
 use std::marker::PhantomData;
 use std::mem::size_of;
 
@@ -296,12 +297,24 @@ impl NumericBinary {
 
     #[inline]
     pub fn set_len(&mut self, len: u32) {
-        self.vl_len = len << 2;
+        cfg_if! {
+            if #[cfg(feature = "big-endian-varlen")] {
+                self.vl_len = (len & 0x3FFF_FFFF).to_be()
+            } else {
+                self.vl_len = len << 2
+            }
+        }
     }
 
     #[inline]
     pub const fn len(&self) -> u32 {
-        (self.vl_len >> 2) & 0x3FFF_FFFF
+        cfg_if! {
+            if #[cfg(feature = "big-endian-varlen")] {
+                u32::from_be(self.vl_len) & 0x3FFF_FFFF
+            } else {
+                (self.vl_len >> 2) & 0x3FFF_FFFF
+            }
+        }
     }
 
     #[allow(dead_code)]
