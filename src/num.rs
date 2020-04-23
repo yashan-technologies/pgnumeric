@@ -297,6 +297,13 @@ impl Numeric {
         &*(value as *const [u8] as *const Numeric)
     }
 
+    /// Creates a `NaN` numeric.
+    #[inline]
+    pub fn nan() -> &'static Numeric {
+        const NAN_BINARY: NumericBinary = NumericBinary::nan();
+        unsafe { Numeric::from_bytes_unchecked(NAN_BINARY.as_bytes()) }
+    }
+
     /// Extracts a byte slice contains the entire numeric.
     #[inline]
     pub fn as_bytes(&self) -> &[u8] {
@@ -1727,6 +1734,10 @@ mod tests {
         let bytes = n.as_bytes();
         let n2 = unsafe { Numeric::from_bytes_unchecked(bytes).to_owned() };
         assert_eq!(n2, n);
+
+        let bytes = n.as_binary().as_bytes();
+        let n3 = unsafe { Numeric::from_bytes_unchecked(bytes).to_owned() };
+        assert_eq!(n3, n);
     }
 
     #[test]

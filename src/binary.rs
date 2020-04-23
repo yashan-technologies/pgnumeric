@@ -373,7 +373,6 @@ impl NumericBinary {
         unsafe { self.choice.n_short.as_mut() }
     }
 
-    #[allow(dead_code)]
     #[inline]
     pub const fn nan() -> NumericBinary {
         NumericBinary {
@@ -384,6 +383,14 @@ impl NumericBinary {
                 n_short: UnionField::new(),
                 _data: [NUMERIC_NAN, 0],
             },
+        }
+    }
+
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        let len = self.len();
+        unsafe {
+            std::slice::from_raw_parts(self as *const NumericBinary as *const u8, len as usize)
         }
     }
 
