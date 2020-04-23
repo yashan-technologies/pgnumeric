@@ -26,6 +26,9 @@ pub struct NumericBuf {
     offset: u32,
 }
 
+unsafe impl Send for NumericBuf {}
+unsafe impl Sync for NumericBuf {}
+
 impl NumericBuf {
     /// Creates a `NumericBuf` from raw pointer.
     ///
