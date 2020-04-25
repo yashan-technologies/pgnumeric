@@ -612,8 +612,11 @@ impl<'a> TryFrom<&NumericVar<'a>> for f32 {
 
     #[inline]
     fn try_from(value: &NumericVar<'a>) -> Result<Self, Self::Error> {
-        let s = value.to_string();
-        let f = s.parse::<f32>()?;
+        use std::fmt::Write;
+        let mut buf = String::with_capacity(32);
+        buf.write_fmt(format_args!("{}", value))
+            .expect("returned an error unexpectedly");
+        let f = buf.parse::<f32>()?;
         Ok(f)
     }
 }
@@ -623,8 +626,11 @@ impl<'a> TryFrom<&NumericVar<'a>> for f64 {
 
     #[inline]
     fn try_from(value: &NumericVar<'a>) -> Result<Self, Self::Error> {
-        let s = value.to_string();
-        let f = s.parse::<f64>()?;
+        use std::fmt::Write;
+        let mut buf = String::with_capacity(32);
+        buf.write_fmt(format_args!("{}", value))
+            .expect("returned an error unexpectedly");
+        let f = buf.parse::<f64>()?;
         Ok(f)
     }
 }
