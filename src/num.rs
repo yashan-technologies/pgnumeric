@@ -304,6 +304,13 @@ impl Numeric {
         unsafe { Numeric::from_bytes_unchecked(NAN_BINARY.as_bytes()) }
     }
 
+    /// Creates a `zero` numeric.
+    #[inline]
+    pub fn zero() -> &'static Numeric {
+        const ZERO_BINARY: NumericBinary = NumericBinary::zero();
+        unsafe { Numeric::from_bytes_unchecked(ZERO_BINARY.as_bytes()) }
+    }
+
     /// Extracts a byte slice contains the entire numeric.
     #[inline]
     pub fn as_bytes(&self) -> &[u8] {
@@ -1793,5 +1800,14 @@ mod tests {
             n2.apply_typmod(typmod);
             assert_eq!(n2.to_string(), "123.46");
         }
+    }
+
+    #[test]
+    fn constant() {
+        let zero = NumericBuf::from(0);
+        assert_eq!(Numeric::zero(), zero);
+
+        let nan = "NaN".parse::<NumericBuf>().unwrap();
+        assert_eq!(Numeric::nan(), nan);
     }
 }

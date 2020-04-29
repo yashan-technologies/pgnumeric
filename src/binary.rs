@@ -387,6 +387,19 @@ impl NumericBinary {
     }
 
     #[inline]
+    pub const fn zero() -> NumericBinary {
+        NumericBinary {
+            vl_len: (NUMERIC_HEADER_SIZE_SHORT as u32) << 2,
+            choice: NumericChoice {
+                n_header: UnionField::new(),
+                n_long: UnionField::new(),
+                n_short: UnionField::new(),
+                _data: [NUMERIC_SHORT, 0],
+            },
+        }
+    }
+
+    #[inline]
     pub fn as_bytes(&self) -> &[u8] {
         let len = self.len();
         unsafe {
