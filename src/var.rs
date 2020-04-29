@@ -12,6 +12,7 @@ use crate::typmod::Typmod;
 use lazy_static::lazy_static;
 use std::borrow::Cow;
 use std::convert::{TryFrom, TryInto};
+use std::f64::consts::{LN_10, LOG10_2, LOG10_E};
 use std::fmt;
 
 /// Limit on the precision (and hence scale) specifiable in a NUMERIC typmod.
@@ -1859,7 +1860,7 @@ impl<'a> NumericVar<'a> {
 
                 // We have self ~= digits * 10^dweight
                 // so ln(self) ~= ln(digits) + dweight * ln(10)
-                let ln_var = (digits as f64).ln() + dweight as f64 * std::f64::consts::LN_10;
+                let ln_var = (digits as f64).ln() + dweight as f64 * LN_10;
                 ln_dweight = ln_var.abs().log10() as i32;
             } else {
                 ln_dweight = 0;
@@ -1928,7 +1929,7 @@ impl<'a> NumericVar<'a> {
         }
 
         // decimal weight = log10(e^x) = x * log10(e)
-        let dweight = (val * std::f64::consts::LOG10_E) as i32;
+        let dweight = (val * LOG10_E) as i32;
         let mut ndiv2: i32;
 
         // Reduce x to the range -0.01 <= x <= 0.01 (approximately) by dividing by
@@ -1958,7 +1959,6 @@ impl<'a> NumericVar<'a> {
         // raise the Taylor series result to the power 2^ndiv2, which introduces
         // an error of up to around log10(2^ndiv2) digits, so work with this many
         // extra digits of precision (plus a few more for good measure).
-        const LOG10_2: f64 = 0.301_029_995_663_981_f64;
         let mut sig_digits = 1 + dweight + rscale + (ndiv2 as f64 * LOG10_2) as i32;
         sig_digits = sig_digits.max(0) + 8;
 
@@ -2068,7 +2068,7 @@ impl<'a> NumericVar<'a> {
             return None;
         }
 
-        val *= std::f64::consts::LOG10_E; // approximate decimal result weight
+        val *= LOG10_E; // approximate decimal result weight
 
         // choose the result scale
         let rscale = (NUMERIC_MIN_SIG_DIGITS - val as i32)
@@ -2555,7 +2555,7 @@ impl<'a> NumericVar<'a> {
 
         // log10(result) = num * log10(e), so this is approximately the decimal
         // weight of the result:
-        val *= std::f64::consts::LOG10_E;
+        val *= LOG10_E;
 
         // limit to something that won't cause integer overflow
         val = val
