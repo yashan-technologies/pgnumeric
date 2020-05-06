@@ -3,6 +3,13 @@ name = "pgnumeric"
 version = "0.1.0"
 authors = ["David Li <davidli2010@foxmail.com>"]
 edition = "2018"
+readme = "README.md"
+license = "Apache-2.0"
+description = "Arbitrary precision numeric implementation written in Rust, compatible with PostgreSQL's numeric."
+keywords = ["numeric", "decimal", "postgres", "postgresql"]
+repository = "https://github.com/cod-technologies/pgnumeric.git"
+homepage = "https://github.com/cod-technologies/pgnumeric"
+documentation = "https://docs.rs/pgnumeric/"
 
 [features]
 # varlen header in big endian byte order

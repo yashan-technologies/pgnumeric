@@ -1,5 +1,8 @@
 # pgnumeric
 
+[![Apache-2.0 licensed](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Minimum rustc version](https://img.shields.io/badge/rustc-1.43+-lightgray.svg)](README.md#rust-version-requirements)
+
 Arbitrary precision numeric implementation written in Rust, compatible with PostgreSQL's numeric.
 
 See also: [PostgreSQL Arbitrary Precision Numbers](https://www.postgresql.org/docs/current/datatype-numeric.html#DATATYPE-NUMERIC-DECIMAL)
@@ -54,3 +57,17 @@ let bytes = n1.as_bytes();
 let n2 = unsafe { Numeric::from_bytes_unchecked(bytes) };
 assert_eq!(n1, n2);
 ```
+
+## Rust version requirements
+
+`pgnumeric` works on rust `1.43`.
+
+## License
+
+This project is licensed under the Apache-2.0 license ([LICENSE](LICENSE) or http://www.apache.org/licenses/LICENSE-2.0).
+
+## Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in `pgnumeric` by you, shall be licensed as Apache-2.0, without any additional
+terms or conditions.
