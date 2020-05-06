@@ -2,6 +2,8 @@
 
 [![Apache-2.0 licensed](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Minimum rustc version](https://img.shields.io/badge/rustc-1.43+-lightgray.svg)](README.md#rust-version-requirements)
+[![Crate](https://img.shields.io/crates/v/pgnumeric.svg)](https://crates.io/crates/pgnumeric)
+[![API](https://docs.rs/pgnumeric/badge.svg)](https://docs.rs/pgnumeric)
 
 Arbitrary precision numeric implementation written in Rust, compatible with PostgreSQL's numeric.
 
