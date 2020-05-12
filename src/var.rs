@@ -2102,17 +2102,17 @@ impl<'a> NumericVar<'a> {
     /// `self` is displayed to the number of digits indicated by its dscale.
     pub fn write<W: fmt::Write>(&self, f: &mut W) -> Result<(), fmt::Error> {
         if self.is_nan() {
-            return write!(f, "NaN");
+            return f.write_str("NaN");
         }
 
         // Output a dash for negative values.
         if self.sign == NUMERIC_NEG {
-            write!(f, "-")?;
+            f.write_char('-')?;
         }
 
         // Output all digits before the decimal point.
         if self.weight < 0 {
-            write!(f, "0")?;
+            f.write_char('0')?;
         } else {
             let digits = self.digits();
             debug_assert_eq!(digits.len(), self.ndigits as usize);
@@ -2137,7 +2137,7 @@ impl<'a> NumericVar<'a> {
 
         // If requested, output a decimal point and all the digits that follow it.
         if self.dscale > 0 {
-            write!(f, ".")?;
+            f.write_char('.')?;
 
             let digits = self.digits();
             debug_assert_eq!(digits.len(), self.ndigits as usize);

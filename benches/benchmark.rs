@@ -109,7 +109,7 @@ fn into_benchmark(c: &mut Criterion) {
     c.bench_function("to_f64", |b| {
         let val = parse("1.234567890123456789e10");
         b.iter(|| {
-            let _n: f32 = into(black_box(&val));
+            let _n: f64 = into(black_box(&val));
         })
     });
 }
