@@ -625,11 +625,23 @@ impl<'a> TryFrom<&NumericVar<'a>> for f32 {
     #[inline]
     fn try_from(value: &NumericVar<'a>) -> Result<Self, Self::Error> {
         use std::fmt::Write;
+        if value.is_nan() {
+            return Ok(std::f32::NAN);
+        }
         let mut buf = String::with_capacity(32);
         buf.write_fmt(format_args!("{}", value))
             .expect("returned an error unexpectedly");
-        let f = buf.parse::<f32>()?;
-        Ok(f)
+
+        match strtod::strtod(&buf) {
+            Some(val) => {
+                let f = val as f32;
+                if (f.is_infinite() && !val.is_infinite()) || (f == 0.0 && val != 0.0) {
+                    return Err(NumericTryFromError::overflow());
+                }
+                Ok(f)
+            }
+            None => Err(NumericTryFromError::overflow()),
+        }
     }
 }
 
@@ -639,11 +651,17 @@ impl<'a> TryFrom<&NumericVar<'a>> for f64 {
     #[inline]
     fn try_from(value: &NumericVar<'a>) -> Result<Self, Self::Error> {
         use std::fmt::Write;
+        if value.is_nan() {
+            return Ok(std::f64::NAN);
+        }
         let mut buf = String::with_capacity(32);
         buf.write_fmt(format_args!("{}", value))
             .expect("returned an error unexpectedly");
-        let f = buf.parse::<f64>()?;
-        Ok(f)
+
+        match strtod::strtod(&buf) {
+            Some(f) => Ok(f),
+            None => Err(NumericTryFromError::overflow()),
+        }
     }
 }
 
@@ -1140,7 +1158,7 @@ mod tests {
         assert_try_into("1.23456789e-10", 1.23456789e-10f32);
         assert_try_into("3.40282347e+38", std::f32::MAX);
         assert_try_into("-3.40282347e+38", std::f32::MIN);
-        assert_try_into("1e39", std::f32::INFINITY);
+        assert_try_into_overflow::<f32>("1e39");
         assert_try_into("1.17549435e-38", std::f32::MIN_POSITIVE);
         assert!(try_into::<&str, f32>("NaN").is_nan());
     }
