@@ -288,6 +288,64 @@ impl<'a> From<&'a NumericBuf> for Cow<'a, Numeric> {
     }
 }
 
+#[cfg(feature = "serde")]
+impl serde::Serialize for NumericBuf {
+    #[inline]
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::ser::Serializer,
+    {
+        if serializer.is_human_readable() {
+            self.to_string().serialize(serializer)
+        } else {
+            self.as_bytes().serialize(serializer)
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for NumericBuf {
+    #[inline]
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        struct NumericBufVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for NumericBufVisitor {
+            type Value = NumericBuf;
+
+            #[inline]
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(formatter, "a numeric")
+            }
+
+            #[inline]
+            fn visit_str<E>(self, v: &str) -> Result<NumericBuf, E>
+            where
+                E: serde::de::Error,
+            {
+                v.parse().map_err(|e| serde::de::Error::custom(e))
+            }
+
+            #[inline]
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let n = unsafe { Numeric::from_bytes_unchecked(v) };
+                Ok(n.to_owned())
+            }
+        }
+
+        if deserializer.is_human_readable() {
+            deserializer.deserialize_str(NumericBufVisitor)
+        } else {
+            deserializer.deserialize_bytes(NumericBufVisitor)
+        }
+    }
+}
+
 /// A slice of a numeric.
 ///
 /// This is an *unsized* type, meaning that it must always be used behind a
@@ -937,6 +995,58 @@ impl Hash for Numeric {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         Numeric::hash(self, state)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for Numeric {
+    #[inline]
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::ser::Serializer,
+    {
+        if serializer.is_human_readable() {
+            self.to_string().serialize(serializer)
+        } else {
+            self.as_bytes().serialize(serializer)
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for &'de Numeric {
+    #[inline]
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        struct NumericVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for NumericVisitor {
+            type Value = &'de Numeric;
+
+            #[inline]
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(formatter, "a numeric")
+            }
+
+            #[inline]
+            fn visit_borrowed_bytes<E>(self, v: &'de [u8]) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let n = unsafe { Numeric::from_bytes_unchecked(v) };
+                Ok(n)
+            }
+        }
+
+        if deserializer.is_human_readable() {
+            Err(serde::de::Error::custom(
+                "can't deserialize borrowed numeric from string",
+            ))
+        } else {
+            deserializer.deserialize_bytes(NumericVisitor)
+        }
     }
 }
 
@@ -1821,5 +1931,31 @@ mod tests {
 
         let nan = "NaN".parse::<NumericBuf>().unwrap();
         assert_eq!(Numeric::nan(), nan);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde() {
+        let num_buf = "123.456".parse::<NumericBuf>().unwrap();
+
+        let json = serde_json::to_string(&num_buf).unwrap();
+        assert_eq!(json, r#""123.456""#);
+        let num_buf2: NumericBuf = serde_json::from_str(&json).unwrap();
+        assert_eq!(num_buf2, num_buf);
+
+        let bin = bincode::serialize(&num_buf).unwrap();
+        let num_buf3: NumericBuf = bincode::deserialize(&bin).unwrap();
+        assert_eq!(num_buf3, num_buf);
+
+        let num = num_buf.as_numeric();
+
+        let json2 = serde_json::to_string(&num).unwrap();
+        assert_eq!(json2, r#""123.456""#);
+        let ret = serde_json::from_str::<&Numeric>(&json2);
+        assert!(ret.is_err());
+
+        let bin2 = bincode::serialize(&num).unwrap();
+        let num2: &Numeric = bincode::deserialize(&bin2).unwrap();
+        assert_eq!(num2, num);
     }
 }
