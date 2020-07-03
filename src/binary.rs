@@ -308,25 +308,35 @@ impl NumericBinary {
     }
 
     #[inline]
-    pub fn set_len(&mut self, len: u32) {
+    const fn encode_len(len: u32) -> u32 {
         cfg_if! {
             if #[cfg(feature = "big-endian-varlen")] {
-                self.vl_len = (len & 0x3FFF_FFFF).to_be()
+                (len & 0x3FFF_FFFF).to_be()
             } else {
-                self.vl_len = len << 2
+                len << 2
             }
         }
     }
 
     #[inline]
-    pub const fn len(&self) -> u32 {
+    const fn decode_len(len: u32) -> u32 {
         cfg_if! {
             if #[cfg(feature = "big-endian-varlen")] {
-                u32::from_be(self.vl_len) & 0x3FFF_FFFF
+                u32::from_be(len) & 0x3FFF_FFFF
             } else {
-                (self.vl_len >> 2) & 0x3FFF_FFFF
+                (len >> 2) & 0x3FFF_FFFF
             }
         }
+    }
+
+    #[inline]
+    pub fn set_len(&mut self, len: u32) {
+        self.vl_len = NumericBinary::encode_len(len);
+    }
+
+    #[inline]
+    pub const fn len(&self) -> u32 {
+        NumericBinary::decode_len(self.vl_len)
     }
 
     #[allow(dead_code)]
@@ -388,7 +398,7 @@ impl NumericBinary {
     #[inline]
     pub const fn nan() -> NumericBinary {
         NumericBinary {
-            vl_len: (NUMERIC_HEADER_SIZE_SHORT as u32) << 2,
+            vl_len: NumericBinary::encode_len(NUMERIC_HEADER_SIZE_SHORT as u32),
             choice: NumericChoice {
                 n_header: UnionField::new(),
                 n_long: UnionField::new(),
@@ -401,7 +411,7 @@ impl NumericBinary {
     #[inline]
     pub const fn zero() -> NumericBinary {
         NumericBinary {
-            vl_len: (NUMERIC_HEADER_SIZE_SHORT as u32) << 2,
+            vl_len: NumericBinary::encode_len(NUMERIC_HEADER_SIZE_SHORT as u32),
             choice: NumericChoice {
                 n_header: UnionField::new(),
                 n_long: UnionField::new(),
