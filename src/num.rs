@@ -28,7 +28,6 @@ pub const DIVIDE_BY_ZERO_MSG: &str = "attempt to divide by zero";
 pub const VALUE_OVERFLOW_MSG: &str = "value overflows numeric format";
 
 /// An owned, mutable numeric.
-#[derive(Debug)]
 pub struct NumericBuf {
     // data buffer
     buf: *const u8,
@@ -216,6 +215,23 @@ impl Clone for NumericBuf {
     #[inline]
     fn clone(&self) -> Self {
         self.as_var().into_numeric_buf()
+    }
+}
+
+impl fmt::Debug for NumericBuf {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        let buf = if self.buf.is_null() {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(self.buf, self.len as usize) }
+        };
+
+        f.debug_struct("NumericBuf")
+            .field("buf", &buf)
+            .field("len", &self.len)
+            .field("offset", &self.offset)
+            .finish()
     }
 }
 
