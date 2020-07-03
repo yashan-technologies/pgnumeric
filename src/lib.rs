@@ -14,7 +14,14 @@
 
 //! Arbitrary precision numeric, compatible with PostgreSQL's numeric.
 //!
-//! This crate provides two types, [`NumericBuf`] and [`Numeric`].
+//! This crate provides two types, `NumericBuf` and `Numeric`.
+//!
+//! ## Optional features
+//!
+//! ### `serde`
+//!
+//! When this optional dependency is enabled, `NumericBuf` and `Numeric` implement the `serde::Serialize` and
+//! `serde::Deserialize` traits.
 //!
 //! ## Usage
 //!

@@ -9,7 +9,13 @@ Arbitrary precision numeric implementation written in Rust, compatible with Post
 
 See also: [PostgreSQL Arbitrary Precision Numbers](https://www.postgresql.org/docs/current/datatype-numeric.html#DATATYPE-NUMERIC-DECIMAL)
 
-This crate provides two types, [`NumericBuf`] and [`Numeric`].
+This crate provides two types, `NumericBuf` and `Numeric`.
+
+## Optional features
+
+### `serde`
+
+When this optional dependency is enabled, `NumericBuf` and `Numeric` implement the `serde::Serialize` and `serde::Deserialize` traits.
 
 ## Usage
 
