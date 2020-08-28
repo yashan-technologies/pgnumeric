@@ -704,6 +704,34 @@ impl PartialEq<NumericBuf> for &Numeric {
     }
 }
 
+impl PartialEq<Numeric> for &Numeric {
+    #[inline]
+    fn eq(&self, other: &Numeric) -> bool {
+        (*self).eq(other)
+    }
+}
+
+impl PartialEq<&Numeric> for Numeric {
+    #[inline]
+    fn eq(&self, other: &&Numeric) -> bool {
+        self.eq(*other)
+    }
+}
+
+impl PartialEq<NumericBuf> for &NumericBuf {
+    #[inline]
+    fn eq(&self, other: &NumericBuf) -> bool {
+        (*self).eq(other)
+    }
+}
+
+impl PartialEq<&NumericBuf> for NumericBuf {
+    #[inline]
+    fn eq(&self, other: &&NumericBuf) -> bool {
+        self.eq(*other)
+    }
+}
+
 impl PartialOrd<Numeric> for NumericBuf {
     #[inline]
     fn partial_cmp(&self, other: &Numeric) -> Option<Ordering> {
@@ -729,6 +757,34 @@ impl PartialOrd<NumericBuf> for &Numeric {
     #[inline]
     fn partial_cmp(&self, other: &NumericBuf) -> Option<Ordering> {
         (*self).partial_cmp(other.as_numeric())
+    }
+}
+
+impl PartialOrd<Numeric> for &Numeric {
+    #[inline]
+    fn partial_cmp(&self, other: &Numeric) -> Option<Ordering> {
+        (*self).partial_cmp(other)
+    }
+}
+
+impl PartialOrd<&Numeric> for Numeric {
+    #[inline]
+    fn partial_cmp(&self, other: &&Numeric) -> Option<Ordering> {
+        self.partial_cmp(*other)
+    }
+}
+
+impl PartialOrd<NumericBuf> for &NumericBuf {
+    #[inline]
+    fn partial_cmp(&self, other: &NumericBuf) -> Option<Ordering> {
+        (*self).partial_cmp(other)
+    }
+}
+
+impl PartialOrd<&NumericBuf> for NumericBuf {
+    #[inline]
+    fn partial_cmp(&self, other: &&NumericBuf) -> Option<Ordering> {
+        self.partial_cmp(*other)
     }
 }
 
