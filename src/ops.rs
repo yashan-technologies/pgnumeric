@@ -365,7 +365,7 @@ impl Div<&NumericBuf> for &NumericBuf {
     fn div(self, other: &NumericBuf) -> Self::Output {
         let (result, overflow) = self.overflowing_div(other);
         if overflow {
-            panic!(VALUE_OVERFLOW_MSG)
+            panic!("{}", VALUE_OVERFLOW_MSG)
         }
 
         result
@@ -445,7 +445,7 @@ impl Div<&Numeric> for &Numeric {
     fn div(self, other: &Numeric) -> Self::Output {
         let (result, overflow) = self.overflowing_div(other);
         if overflow {
-            panic!(VALUE_OVERFLOW_MSG)
+            panic!("{}", VALUE_OVERFLOW_MSG)
         }
 
         result
@@ -487,7 +487,7 @@ impl Rem<&NumericBuf> for &NumericBuf {
     fn rem(self, other: &NumericBuf) -> Self::Output {
         let (result, overflow) = self.overflowing_rem(other);
         if overflow {
-            panic!(VALUE_OVERFLOW_MSG)
+            panic!("{}", VALUE_OVERFLOW_MSG)
         }
 
         result
@@ -567,7 +567,7 @@ impl Rem<&Numeric> for &Numeric {
     fn rem(self, other: &Numeric) -> Self::Output {
         let (result, overflow) = self.overflowing_rem(other);
         if overflow {
-            panic!(VALUE_OVERFLOW_MSG)
+            panic!("{}", VALUE_OVERFLOW_MSG)
         }
 
         result

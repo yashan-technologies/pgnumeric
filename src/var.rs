@@ -1650,7 +1650,7 @@ impl<'a> NumericVar<'a> {
 
         // Handle the special case where the base is zero
         if self.ndigits == 0 {
-            assert!(exp >= 0, DIVIDE_BY_ZERO_MSG);
+            assert!(exp >= 0, "{}", DIVIDE_BY_ZERO_MSG);
             return Some(Self::zero_scaled(rscale));
         }
 

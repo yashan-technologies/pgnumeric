@@ -108,7 +108,7 @@ impl NumericBuf {
         var.round(scale);
         match var.make_result() {
             Some(result) => *self = result,
-            None => panic!(VALUE_OVERFLOW_MSG),
+            None => panic!("{}", VALUE_OVERFLOW_MSG),
         }
     }
 
@@ -494,7 +494,7 @@ impl Numeric {
         // Compute the result and return it
         match bin.as_var().inc().make_result() {
             Some(result) => result,
-            None => panic!(VALUE_OVERFLOW_MSG),
+            None => panic!("{}", VALUE_OVERFLOW_MSG),
         }
     }
 
@@ -681,7 +681,7 @@ impl Numeric {
         var.round(scale);
         match var.make_result() {
             Some(result) => result,
-            None => panic!(VALUE_OVERFLOW_MSG),
+            None => panic!("{}", VALUE_OVERFLOW_MSG),
         }
     }
 
@@ -715,7 +715,7 @@ impl Numeric {
 
         match bin.as_var().ceil().make_result() {
             Some(result) => result,
-            None => panic!(VALUE_OVERFLOW_MSG),
+            None => panic!("{}", VALUE_OVERFLOW_MSG),
         }
     }
 
@@ -733,7 +733,7 @@ impl Numeric {
 
         match bin.as_var().floor().make_result() {
             Some(result) => result,
-            None => panic!(VALUE_OVERFLOW_MSG),
+            None => panic!("{}", VALUE_OVERFLOW_MSG),
         }
     }
 
