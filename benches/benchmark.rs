@@ -122,6 +122,7 @@ fn try_from<T: TryInto<NumericBuf, Error = NumericTryFromError>>(val: T) -> Nume
     val.try_into().unwrap()
 }
 
+#[allow(clippy::excessive_precision)]
 fn from_benchmark(c: &mut Criterion) {
     c.bench_function("from_u8", |b| {
         b.iter(|| {

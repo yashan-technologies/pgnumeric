@@ -1022,7 +1022,7 @@ mod tests {
         let result1 = &var1 / &var2;
         assert_eq!(transform(&result1).to_string(), expected);
 
-        let mut result2 = var1.clone();
+        let mut result2 = var1;
         result2 /= &var2;
         assert_eq!(transform(&result2).to_string(), expected);
     }
@@ -1127,7 +1127,7 @@ mod tests {
         let result1 = &var1 % &var2;
         assert_eq!(transform(&result1).to_string(), expected);
 
-        let mut result2 = var1.clone();
+        let mut result2 = var1;
         result2 %= &var2;
         assert_eq!(transform(&result2).to_string(), expected);
     }

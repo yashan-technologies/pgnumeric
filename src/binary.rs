@@ -478,7 +478,6 @@ impl NumericBinary {
 mod tests {
     use super::*;
     use crate::data::NumericData;
-    use std::mem;
     use std::mem::size_of;
 
     #[test]
@@ -504,34 +503,31 @@ mod tests {
 
         unsafe {
             let bin_ptr = (offset as *mut u8).sub(NUMERIC_HEADER_SIZE);
-            let bin: &mut NumericBinary = mem::transmute(bin_ptr);
+            let bin: &mut NumericBinary = &mut *(bin_ptr as *mut NumericBinary);
             assert_eq!(bin_ptr, buf.offset(1) as *mut u8);
 
             let long_mut = bin.long_mut();
             let long = long_mut as *mut NumericLong as *mut u8;
-            assert_eq!(bin_ptr.offset(size_of::<u32>() as isize), long);
+            assert_eq!(bin_ptr.add(size_of::<u32>()), long);
 
             let long_data = long_mut.n_data.as_ptr();
             assert_eq!(
-                long.offset((size_of::<u16>() + size_of::<i16>()) as isize),
+                long.add(size_of::<u16>() + size_of::<i16>()),
                 long_data as *mut u8
             );
         }
 
         unsafe {
             let bin_ptr = (offset as *mut u8).sub(NUMERIC_HEADER_SIZE_SHORT);
-            let bin: &mut NumericBinary = mem::transmute(bin_ptr);
+            let bin: &mut NumericBinary = &mut *(bin_ptr as *mut NumericBinary);
             assert_eq!(bin_ptr, buf.offset(2) as *mut u8);
 
             let short_mut = bin.short_mut();
             let short = short_mut as *mut NumericShort as *mut u8;
-            assert_eq!(bin_ptr.offset(size_of::<u32>() as isize), short);
+            assert_eq!(bin_ptr.add(size_of::<u32>()), short);
 
             let short_data = short_mut.n_data.as_ptr();
-            assert_eq!(
-                short.offset(size_of::<u16>() as isize),
-                short_data as *mut u8
-            );
+            assert_eq!(short.add(size_of::<u16>()), short_data as *mut u8);
         }
     }
 }

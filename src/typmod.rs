@@ -34,7 +34,7 @@ impl Typmod {
     /// * `0 <= scale <= precision`
     #[inline]
     pub unsafe fn new_unchecked(precision: i32, scale: i32) -> Self {
-        debug_assert!(precision >= 1 && precision <= NUMERIC_MAX_PRECISION);
+        debug_assert!((1..=NUMERIC_MAX_PRECISION).contains(&precision));
         debug_assert!(scale >= 0 && scale <= precision);
 
         Typmod(((precision << 16) | scale) + VAR_HEADER_SIZE)
@@ -48,7 +48,7 @@ impl Typmod {
     /// * `1 <= precision <= NUMERIC_MAX_PRECISION`
     #[inline]
     pub unsafe fn with_precision_unchecked(precision: i32) -> Self {
-        debug_assert!(precision >= 1 && precision <= NUMERIC_MAX_PRECISION);
+        debug_assert!((1..=NUMERIC_MAX_PRECISION).contains(&precision));
 
         Typmod((precision << 16) + VAR_HEADER_SIZE)
     }
@@ -60,7 +60,7 @@ impl Typmod {
     /// * if `0 <= scale <= precision`
     #[inline]
     pub fn new(precision: i32, scale: i32) -> Option<Self> {
-        if precision < 1 || precision > NUMERIC_MAX_PRECISION || scale < 0 || scale > precision {
+        if !(1..=NUMERIC_MAX_PRECISION).contains(&precision) || scale < 0 || scale > precision {
             None
         } else {
             Some(unsafe { Self::new_unchecked(precision, scale) })
@@ -74,7 +74,7 @@ impl Typmod {
     /// * if `1 <= precision <= NUMERIC_MAX_PRECISION`
     #[inline]
     pub fn with_precision(precision: i32) -> Option<Self> {
-        if precision < 1 || precision > NUMERIC_MAX_PRECISION {
+        if !(1..=NUMERIC_MAX_PRECISION).contains(&precision) {
             None
         } else {
             Some(unsafe { Self::with_precision_unchecked(precision) })

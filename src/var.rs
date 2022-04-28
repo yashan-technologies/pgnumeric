@@ -1071,7 +1071,7 @@ impl<'a> NumericVar<'a> {
         // might be the same as either input var) before we begin the main loop.
         // Note that we use palloc0 to ensure that divisor[0], dividend[0], and
         // any additional dividend positions beyond var1_ndigits, start out 0.
-        let mut workspace = vec![0 as NumericDigit; (div_ndigits + var2_ndigits + 2) as usize];
+        let mut workspace = vec![0; (div_ndigits + var2_ndigits + 2) as usize];
         let (dividend, divisor) = workspace.split_at_mut(div_ndigits as usize + 1);
         dividend[1..=var1_ndigits as usize].copy_from_slice(self.digits());
         divisor[1..=var2_ndigits as usize].copy_from_slice(other.digits());
@@ -2387,9 +2387,9 @@ impl<'a> NumericVar<'a> {
         debug_assert!(!other.is_nan());
 
         // Select scale for division result
-        let rscale = self.select_div_scale(&other);
+        let rscale = self.select_div_scale(other);
 
-        self.div_common(&other, rscale, true)
+        self.div_common(other, rscale, true)
     }
 
     /// Computes `self / other`, truncating the result to an integer.
@@ -2400,7 +2400,7 @@ impl<'a> NumericVar<'a> {
         debug_assert!(!self.is_nan());
         debug_assert!(!other.is_nan());
 
-        self.div_common(&other, 0, false)
+        self.div_common(other, 0, false)
     }
 
     /// Round a value to have `scale` digits after the decimal point.
@@ -2530,7 +2530,7 @@ impl<'a> NumericVar<'a> {
 
         //  Call log_common() to compute and return the result;
         //	note it handles scale selection itself.
-        self.log_common(&base)
+        self.log_common(base)
     }
 
     /// Compute the base 2 logarithm of `self`.
@@ -2621,7 +2621,7 @@ impl<'a> NumericVar<'a> {
 
         // Call power_common() to compute and return the result; note it handles
         // scale selection itself.
-        self.power_common(&exp)
+        self.power_common(exp)
     }
 
     /// Do bounds checking and rounding according to `typmod`.

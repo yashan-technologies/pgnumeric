@@ -900,6 +900,7 @@ mod tests {
         assert_eq!(result.unwrap_err(), NumericTryFromError::invalid());
     }
 
+    #[allow(clippy::excessive_precision)]
     #[test]
     fn try_from_f32() {
         assert_try_from_invalid(std::f32::INFINITY);
@@ -926,6 +927,7 @@ mod tests {
         assert_try_from(1.23456789e-10f32, "0.000000000123457");
     }
 
+    #[allow(clippy::excessive_precision)]
     #[test]
     fn try_from_f64() {
         assert_try_from_invalid(std::f64::INFINITY);
@@ -957,8 +959,7 @@ mod tests {
 
     fn try_into<S: AsRef<str>, T: TryFrom<NumericBuf, Error = NumericTryFromError>>(s: S) -> T {
         let n = s.as_ref().parse::<NumericBuf>().unwrap();
-        let val = TryInto::<T>::try_into(n).unwrap();
-        val
+        TryInto::<T>::try_into(n).unwrap()
     }
 
     fn assert_try_into<
@@ -1142,6 +1143,7 @@ mod tests {
         assert_try_into_invalid::<isize>("NaN");
     }
 
+    #[allow(clippy::excessive_precision)]
     #[test]
     fn into_f32() {
         assert_try_into("0", 0f32);
